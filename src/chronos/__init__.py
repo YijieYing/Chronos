@@ -1,6 +1,5 @@
-"""Chronos work-state estimation core."""
+"""Chronos monitor, schedule, and adaptation engine."""
 
-from chronos.models import ActivitySegment, FeatureWindow, Observation, WorkStateEstimate
+from chronos.monitor import ActivitySegment, FeatureWindow, Observation, WorkStateEstimate
 
 __all__ = ["ActivitySegment", "FeatureWindow", "Observation", "WorkStateEstimate"]
-

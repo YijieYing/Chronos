@@ -1,8 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from unittest import TestCase
 
-from chronos.models import Observation, ObservationKind
-from chronos.observation import ObservationManager
+from chronos.monitor.models import Observation, ObservationKind
+from chronos.monitor.observations import ObservationManager
 
 
 class ObservationManagerTest(TestCase):
@@ -40,4 +40,3 @@ class ObservationManagerTest(TestCase):
         self.assertTrue(result.duplicate)
         self.assertEqual(manager.depth, 1)
         self.assertEqual(manager.duplicate_count, 1)
-

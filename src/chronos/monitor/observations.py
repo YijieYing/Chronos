@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from threading import Lock
 
-from chronos.models import Observation
+from chronos.monitor.models import Observation
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,4 +70,3 @@ class ObservationManager:
     def duplicate_count(self) -> int:
         with self._lock:
             return self._duplicate_count
-

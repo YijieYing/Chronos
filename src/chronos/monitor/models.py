@@ -1,4 +1,4 @@
-"""Core data contracts shared by collectors and the estimation pipeline."""
+"""Monitor data contracts shared by collectors and the estimation pipeline."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 
 class ObservationKind(StrEnum):
+    COLLECTOR_STATUS = "collector.status"
     INPUT_ACTIVITY = "input.activity"
     FOREGROUND_CHANGED = "foreground.changed"
     DEVICE_PRESENCE = "device.presence"
@@ -83,6 +84,8 @@ class FeatureWindow:
     context_switches: int = 0
     app_seconds: Mapping[str, float] = field(default_factory=dict)
     latest_context: AppContext | None = None
+    screen_state: str | None = None
+    device_state: str | None = None
     observation_count: int = 0
 
     def __post_init__(self) -> None:
@@ -125,4 +128,3 @@ class ActivitySegment:
     status: SegmentStatus
     task_id: str | None = None
     estimate_count: int = 1
-

@@ -1,8 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from unittest import TestCase
 
-from chronos.estimation import FeatureAggregator, RuleBasedStateEstimator, SegmentBuilder
-from chronos.models import (
+from chronos.monitor.aggregation import FeatureAggregator
+from chronos.monitor.estimator import RuleBasedStateEstimator
+from chronos.monitor.models import (
     Activity,
     Observation,
     ObservationKind,
@@ -10,6 +11,7 @@ from chronos.models import (
     SegmentStatus,
     WorkStateEstimate,
 )
+from chronos.monitor.segments import SegmentBuilder
 
 
 class EstimationPipelineTest(TestCase):
@@ -97,4 +99,3 @@ class EstimationPipelineTest(TestCase):
             confidence=0.8,
             focus_level=0.7,
         )
-

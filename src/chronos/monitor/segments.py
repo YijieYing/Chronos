@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from chronos.models import ActivitySegment, SegmentStatus, WorkStateEstimate
+from chronos.monitor.models import ActivitySegment, SegmentStatus, WorkStateEstimate
 
 
 class SegmentBuilder:
@@ -89,4 +89,3 @@ class SegmentBuilder:
 
 def _running_average(current: float, count: int, new: float) -> float:
     return ((current * count) + new) / (count + 1)
-

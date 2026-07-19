@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 
-from chronos.models import AppContext, FeatureWindow, Observation, ObservationKind
+from chronos.monitor.models import AppContext, FeatureWindow, Observation, ObservationKind
 
 
 class FeatureAggregator:
@@ -17,6 +17,8 @@ class FeatureAggregator:
         start_at: datetime,
         end_at: datetime,
         initial_context: AppContext | None = None,
+        initial_screen_state: str | None = None,
+        initial_device_state: str | None = None,
     ) -> FeatureWindow:
         relevant = sorted(
             (
@@ -30,6 +32,8 @@ class FeatureAggregator:
         key_count = click_count = 0
         pointer_distance = scroll_distance = active_seconds = 0.0
         context_events: list[tuple[datetime, AppContext]] = []
+        screen_state = initial_screen_state
+        device_state = initial_device_state
 
         for item in relevant:
             if item.kind == ObservationKind.INPUT_ACTIVITY:
@@ -49,6 +53,10 @@ class FeatureAggregator:
                         ),
                     )
                 )
+            elif item.kind == ObservationKind.SCREEN_STATE:
+                screen_state = _optional_string(item.payload.get("state"))
+            elif item.kind == ObservationKind.DEVICE_PRESENCE:
+                device_state = _optional_string(item.payload.get("state"))
 
         app_seconds: defaultdict[str, float] = defaultdict(float)
         cursor = start_at
@@ -77,10 +85,11 @@ class FeatureAggregator:
             context_switches=switches,
             app_seconds=app_seconds,
             latest_context=current,
+            screen_state=screen_state,
+            device_state=device_state,
             observation_count=len(relevant),
         )
 
 
 def _optional_string(value: object) -> str | None:
     return None if value is None else str(value)
-

@@ -25,3 +25,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Swift
+.build/
+.swiftpm/
+Package.resolved
