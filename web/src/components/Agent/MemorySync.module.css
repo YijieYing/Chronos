@@ -96,10 +96,16 @@
 }
 .candidate > p { margin: 11px 0 8px; color: #2e413a; font-size: 12px; line-height: 1.5; }
 .candidate small { display: block; overflow: hidden; color: #8a9893; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.relatedMemory { padding: 8px; border-radius: 7px; background: #f8eee9; color: #795e51 !important; font-size: 10px !important; }
+.meta span[data-change="possible_conflict"] { color: #a84f3d; }
+.meta span[data-change="possible_update"] { color: #9a7028; }
 .reviewActions { justify-content: flex-end; gap: 7px; margin-top: 12px; }
 .reviewActions button { padding: 7px 10px; border: 1px solid #cedbd6; border-radius: 7px; background: transparent; color: #65756f; font: 700 8px/1 monospace; }
 .reviewActions button[data-primary] { border-color: #2b8e6c; background: #2b8e6c; color: white; }
-.contextItem { margin: 8px 0 0; padding: 9px 11px; border-left: 2px solid #86af9f; background: #edf3f0; color: #52675f; font-size: 11px; }
+.contextItem { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; padding: 9px 11px; border-left: 2px solid #86af9f; background: #edf3f0; color: #52675f; font-size: 11px; }
+.contextItem p { flex: 1; margin: 0; line-height: 1.4; }
+.contextItem > div { display: flex; gap: 5px; }
+.contextItem button { padding: 5px 6px; border: 1px solid #c6d7d0; border-radius: 5px; background: transparent; color: #587267; font: 700 7px/1 monospace; }
 .importRow { gap: 9px; margin-top: 8px; padding: 9px 0; border-bottom: 1px solid #e0e8e4; }
 .importRow p { flex: 1; margin: 0; overflow: hidden; color: #61726b; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .importRow b { color: #789087; font: 700 10px/1 monospace; }

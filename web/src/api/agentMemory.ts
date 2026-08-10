@@ -12,6 +12,9 @@ export interface MemoryCandidate {
   confidence: number;
   status: "pending" | "accepted" | "ignored";
   created_at: string;
+  change_type?: "new" | "possible_update" | "possible_conflict";
+  related_context_id?: string | null;
+  related_content?: string | null;
 }
 
 export interface MemoryImport {
@@ -33,6 +36,7 @@ export interface AgentContextItem {
   content: string;
   source_ref: string;
   updated_at: string;
+  revision?: number;
 }
 
 export async function uploadMemoryDocument(
@@ -72,5 +76,27 @@ export function reviewMemoryCandidate(
   return apiRequest<MemoryCandidate>(
     `/api/v1/agent/memory/candidates/${encodeURIComponent(id)}/${action}`,
     { method: "POST" },
+  );
+}
+
+export function updateAgentContext(
+  id: string,
+  content: string,
+  category: string,
+): Promise<AgentContextItem> {
+  return apiRequest<AgentContextItem>(
+    `/api/v1/agent/memory/items/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, category }),
+    },
+  );
+}
+
+export function deleteAgentContext(id: string): Promise<{ deleted: boolean }> {
+  return apiRequest<{ deleted: boolean }>(
+    `/api/v1/agent/memory/items/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
   );
 }

@@ -193,7 +193,11 @@ POST   /api/v1/proposals/<id>/restore
 
 V1 responses use a stable envelope with `schema_version`, `request_id`, `data`, and `error`.
 Agent requests are parsed into structured Schedule commands on the backend. The built-in parser
-supports create, move/resize, delete, and query requests behind a replaceable parser interface.
+supports create (including daily and weekly recurrence), move/resize, delete, and query requests
+behind a replaceable parser interface. Multi-task lists are rejected instead of being collapsed
+into one task. If semantic parsing falls back to local rules, the proposal shows an explicit
+warning so its title, time, and recurrence can be checked before acceptance. An explicitly written
+clock time is treated as fixed and cannot be silently shifted by the planner.
 Mutating commands are previewed by the same Schedule planner and persisted as explainable proposals;
 tasks change only after acceptance, and accepted changes can be restored. Proposal state and
 explanations survive UI reloads.
@@ -242,8 +246,11 @@ Change the root with `--agent-import-dir`. Uploads are limited to 50 MB; ZIP con
 200 MB uncompressed. Chronos parses Markdown headings and list items locally. For ZIPs, it reads
 `conversations.json` directly without extracting it and uses local rules to propose personal
 statements. Imported source files are never sent to the configured model provider. Re-importing an
-identical file is a no-op. Accepted candidates are stored in SQLite and included in subsequent
-semantic Agent requests; ignored candidates remain auditable but are not used as context.
+identical file is a no-op. New imports are compared with accepted context and marked as new,
+possible updates, or possible conflicts. Accepted candidates are stored in SQLite. Chronos selects
+only request-relevant accepted items for each semantic Agent request and persists the exact
+`context_used` list on the proposal; ignored candidates are not used as context. Accepted items can
+be edited or forgotten from **MEMORY SYNC**, with local revision records retained for audit.
 
 ```text
 POST /api/v1/agent/imports?source=chatgpt|claude&filename=<name.md|name.zip>
@@ -252,6 +259,8 @@ GET  /api/v1/agent/memory/candidates
 POST /api/v1/agent/memory/candidates/<id>/accept
 POST /api/v1/agent/memory/candidates/<id>/ignore
 GET  /api/v1/agent/memory/items
+PUT  /api/v1/agent/memory/items/<id>
+DELETE /api/v1/agent/memory/items/<id>
 ```
 
 Background collection is not yet independent of the desktop window. The current behavior and the

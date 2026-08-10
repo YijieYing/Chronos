@@ -75,6 +75,7 @@ export interface AgentCommand {
   lines: string[];
   status: "proposed" | "accepted" | "rejected";
   proposedTask?: TimelineTask;
+  contextUsed?: string[];
 }
 
 export interface ChronosLogEntry {
@@ -88,6 +89,7 @@ export interface ChronosLogEntry {
   previousTask?: TimelineTask;
   deletedTask?: TimelineTask;
   proposalId?: string;
+  contextUsed?: string[];
 }
 
 export interface NewTaskInput {

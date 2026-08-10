@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import warnings
+from dataclasses import dataclass
 from datetime import date, datetime
 from collections.abc import Callable
 from typing import Protocol
@@ -37,6 +38,14 @@ class TextGenerationProvider(Protocol):
     def generate(self, system: str, prompt: str) -> str: ...
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticParseResult:
+    command: ScheduleCommand
+    context_used: tuple[dict[str, object], ...]
+    parser_mode: str = "semantic"
+    warnings: tuple[str, ...] = ()
+
+
 class SemanticScheduleCommandParser:
     def __init__(
         self,
@@ -45,22 +54,33 @@ class SemanticScheduleCommandParser:
         fallback: ScheduleCommandParser | None = None,
         fallback_on_error: bool = True,
         profile_cache: AgentProfileCache | None = None,
-        memory_context: Callable[[], str] | None = None,
+        memory_retriever: Callable[[str], list[dict[str, object]]] | None = None,
     ) -> None:
         self._provider = provider
         self._fallback = fallback or DeterministicScheduleCommandParser()
         self._fallback_on_error = fallback_on_error
         self._profile_cache = profile_cache or AgentProfileCache(None)
-        self._memory_context = memory_context or (lambda: "")
+        self._memory_retriever = memory_retriever or (lambda _query: [])
 
     def parse(self, text: str, now: datetime, tasks: list[Task]) -> ScheduleCommand:
+        return self.parse_with_context(text, now, tasks).command
+
+    def parse_with_context(
+        self, text: str, now: datetime, tasks: list[Task]
+    ) -> SemanticParseResult:
+        context_used: tuple[dict[str, object], ...] = ()
         try:
             profile = self._profile_cache.get().content
-            memory = self._memory_context()
+            context_used = tuple(self._memory_retriever(text))
+            memory = "\n".join(
+                f"- [{item['category']}] {item['content']}" for item in context_used
+            )
             response = self._provider.generate(
                 _system_prompt(profile, memory), _prompt(text, now, tasks)
             )
-            return _command_from_response(response, now, tasks)
+            return SemanticParseResult(
+                _command_from_response(response, now, tasks, text), context_used
+            )
         except Exception as error:
             if not self._fallback_on_error:
                 raise
@@ -69,11 +89,17 @@ class SemanticScheduleCommandParser:
                 RuntimeWarning,
                 stacklevel=2,
             )
-            return self._fallback.parse(text, now, tasks)
+            return SemanticParseResult(
+                self._fallback.parse(text, now, tasks),
+                context_used,
+                parser_mode="deterministic_fallback",
+                warnings=("语义模型解析失败，本提案由本地规则生成；请重点核对标题、时间和周期。",),
+            )
 
 
 def build_command_parser(
-    config: AgentConfig, memory_context: Callable[[], str] | None = None
+    config: AgentConfig,
+    memory_retriever: Callable[[str], list[dict[str, object]]] | None = None,
 ) -> ScheduleCommandParser:
     if config.provider == "deterministic":
         return DeterministicScheduleCommandParser()
@@ -99,7 +125,7 @@ def build_command_parser(
         fallback=fallback,
         fallback_on_error=config.fallback_on_error,
         profile_cache=AgentProfileCache(config.profile_path, config.profile_max_chars),
-        memory_context=memory_context,
+        memory_retriever=memory_retriever,
     )
 
 
@@ -215,14 +241,20 @@ def _join_url(base_url: str, endpoint: str) -> str:
     return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
 
-_SYSTEM_PROMPT = """You convert natural-language requests into one Chronos Schedule command.
+_SYSTEM_PROMPT = """You convert natural-language requests into exactly one Chronos Schedule command.
 Return only one JSON object, with no markdown. Never invent a task_id: use an id from the supplied
-task list. Allowed types: create_task, update_task, delete_task, query_schedule. Dates and times must
-be ISO 8601 with the supplied timezone. For create_task return title, preferred_start,
-estimated_minutes, task_type. For update_task return task_id and only the new preferred_start and/or
-estimated_minutes. For delete_task return task_id. For query_schedule return optional task_id and
-optional query_date (YYYY-MM-DD). Allowed task_type values: creative, coding, research,
-communication, execution, meeting, recovery."""
+task list. Never copy the full request into title; title must be a concise task name. Allowed types:
+create_task, update_task, delete_task, query_schedule. Dates and times must be ISO 8601 with the
+supplied timezone and must preserve times explicitly requested by the user. For create_task return
+title, preferred_start, estimated_minutes, task_type, and optional recurrence. Recurrence is either
+{"frequency":"daily"} or {"frequency":"weekly","weekdays":[0..6]}, where 0 is Sunday. For
+an exact clock time explicitly supplied by the user, also return "fixed":true; never silently move
+an exact-time task. A broad period such as morning or afternoon is not fixed. For
+update_task return task_id and only the new preferred_start and/or estimated_minutes. For
+delete_task return task_id. For query_schedule return optional task_id and optional query_date
+(YYYY-MM-DD). Allowed task_type values: creative, coding, research, communication, execution,
+meeting, recovery. If the request contains multiple distinct tasks, do not merge them into one
+title."""
 
 
 def _system_prompt(profile: str, memory: str = "") -> str:
@@ -261,7 +293,9 @@ def _prompt(text: str, now: datetime, tasks: list[Task]) -> str:
     )
 
 
-def _command_from_response(response: str, now: datetime, tasks: list[Task]) -> ScheduleCommand:
+def _command_from_response(
+    response: str, now: datetime, tasks: list[Task], request_text: str
+) -> ScheduleCommand:
     cleaned = response.strip()
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.I | re.S)
     if fenced:
@@ -281,9 +315,13 @@ def _command_from_response(response: str, now: datetime, tasks: list[Task]) -> S
     preferred_start = _optional_datetime(payload.get("preferred_start"), now)
     estimated = _optional_positive_int(payload.get("estimated_minutes"))
     if command_type == "create_task":
+        if len(re.findall(r"(?m)^\s*(?:[-*+]|\d+[.)])\s+\S", request_text)) > 1:
+            raise ValueError("Agent 当前一次只能创建一个任务；请逐条提交时间计划")
         title = str(payload.get("title", "")).strip()
         if not title or preferred_start is None or estimated is None:
             raise ValueError("create_task requires title, preferred_start, and estimated_minutes")
+        if len(title) > 80 or _normalized_title(title) == _normalized_title(request_text):
+            raise ValueError("semantic provider did not return a concise task title")
         task_type = str(payload.get("task_type", "execution"))
         if task_type not in TASK_TYPES:
             raise ValueError(f"unknown task_type: {task_type}")
@@ -305,6 +343,8 @@ def _command_from_response(response: str, now: datetime, tasks: list[Task]) -> S
             task_type=task_type,
             cognitive_intensity=intensity,
             spectrum=spectrum,
+            recurrence=_optional_recurrence(payload.get("recurrence")),
+            fixed=bool(payload.get("fixed", False)) or _has_exact_clock(request_text),
         )
     query_date = date.fromisoformat(str(payload["query_date"])) if payload.get("query_date") else None
     return ScheduleCommand(
@@ -330,3 +370,27 @@ def _optional_positive_int(value: object) -> int | None:
     if parsed <= 0:
         raise ValueError("estimated_minutes must be positive")
     return parsed
+
+
+def _optional_recurrence(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("recurrence must be an object")
+    frequency = str(value.get("frequency", ""))
+    if frequency == "daily":
+        return {"frequency": "daily"}
+    if frequency != "weekly":
+        raise ValueError("recurrence frequency must be daily or weekly")
+    weekdays = sorted({int(day) for day in value.get("weekdays", [])})
+    if not weekdays or any(day < 0 or day > 6 for day in weekdays):
+        raise ValueError("weekly recurrence requires weekdays from 0 to 6")
+    return {"frequency": "weekly", "weekdays": weekdays}
+
+
+def _normalized_title(value: str) -> str:
+    return re.sub(r"[^\w\u3400-\u9fff]", "", value.casefold())
+
+
+def _has_exact_clock(value: str) -> bool:
+    return bool(re.search(r"(?:^|\D)(?:[01]?\d|2[0-3])[:：][0-5]\d", value))

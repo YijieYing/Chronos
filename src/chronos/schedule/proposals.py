@@ -39,13 +39,34 @@ class ProposalService:
             raise ValueError("request text is required")
         zone = ZoneInfo(self._schedule.settings()["timezone"])
         local_now = (now or datetime.now(UTC)).astimezone(zone)
-        command = self._parser.parse(text, local_now, self._schedule.list_tasks())
+        tasks = self._schedule.list_tasks()
+        parse_with_context = getattr(self._parser, "parse_with_context", None)
+        if callable(parse_with_context):
+            parsed = parse_with_context(text, local_now, tasks)
+            command = parsed.command
+            context_used = [dict(item) for item in parsed.context_used]
+            parser_mode = str(parsed.parser_mode)
+            parser_warnings = list(parsed.warnings)
+        else:
+            command = self._parser.parse(text, local_now, tasks)
+            context_used = []
+            parser_mode = "deterministic"
+            parser_warnings = []
         if command.type == "query_schedule":
-            return self._create_query(text, command)
-        return self._create_mutation(text, command, zone)
+            return self._create_query(
+                text, command, context_used, parser_mode, parser_warnings
+            )
+        return self._create_mutation(
+            text, command, zone, context_used, parser_mode, parser_warnings
+        )
 
     def _create_query(
-        self, text: str, command: ScheduleCommand
+        self,
+        text: str,
+        command: ScheduleCommand,
+        context_used: list[dict[str, object]],
+        parser_mode: str,
+        parser_warnings: list[str],
     ) -> dict[str, object]:
         zone = ZoneInfo(self._schedule.settings()["timezone"])
         timeline = self._schedule.timeline()["tasks"]
@@ -79,11 +100,20 @@ class ProposalService:
             "changes": [],
             "conflicts": [],
             "explanation": explanation,
+            "context_used": context_used,
+            "parser_mode": parser_mode,
+            "parser_warnings": parser_warnings,
         }
         return self._repository.save(proposal)
 
     def _create_mutation(
-        self, text: str, command: ScheduleCommand, zone: ZoneInfo
+        self,
+        text: str,
+        command: ScheduleCommand,
+        zone: ZoneInfo,
+        context_used: list[dict[str, object]],
+        parser_mode: str,
+        parser_warnings: list[str],
     ) -> dict[str, object]:
         before: Task | None = None
         if command.type == "create_task":
@@ -100,6 +130,8 @@ class ProposalService:
                 spectrum=float(command.spectrum or 0.5),
                 task_type=str(command.task_type or "execution"),
                 source="agent",
+                recurrence=command.recurrence,
+                fixed=bool(command.fixed),
             )
             operation = "add"
             draft = self._schedule.preview_with_task(task)
@@ -171,6 +203,9 @@ class ProposalService:
                 for item in draft.unscheduled
             ],
             "explanation": _explanation(command.type, task, before, effective_start),
+            "context_used": context_used,
+            "parser_mode": parser_mode,
+            "parser_warnings": parser_warnings,
         }
         return self._repository.save(proposal)
 
@@ -271,6 +306,8 @@ def _command_dict(command: ScheduleCommand) -> dict[str, object]:
         "spectrum": command.spectrum,
         "task_type": command.task_type,
         "query_date": command.query_date.isoformat() if command.query_date else None,
+        "recurrence": command.recurrence,
+        "fixed": command.fixed,
     }
 
 

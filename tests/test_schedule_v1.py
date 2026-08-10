@@ -155,6 +155,35 @@ class ScheduleV1Test(TestCase):
         self.proposals.restore(str(deletion["proposal_id"]))
         self.assertIsNotNone(self.repository.get_task(task.task_id))
 
+    def test_agent_can_create_a_weekly_recurring_task(self) -> None:
+        proposal = self.proposals.create(
+            "每周一、三、五上午9:00安排60分钟日语学习",
+            now=datetime(2026, 8, 3, 8, 0, tzinfo=self.zone),
+        )
+
+        self.assertEqual(
+            proposal["command"]["recurrence"],
+            {"frequency": "weekly", "weekdays": [1, 3, 5]},
+        )
+        self.assertEqual(proposal["proposed_task"]["title"], "日语学习")
+        self.assertEqual(proposal["proposed_task"]["recurrence"]["frequency"], "weekly")
+        self.assertTrue(proposal["proposed_task"]["fixed"])
+
+        self.proposals.accept(str(proposal["proposal_id"]))
+        task = self.repository.list_tasks()[0]
+        self.assertEqual(task.recurrence, {"frequency": "weekly", "weekdays": [1, 3, 5]})
+
+    def test_agent_rejects_a_multi_task_plan_instead_of_using_it_as_title(self) -> None:
+        request = """请安排以下计划：
+- 每天 9:00 学日语 30 分钟
+- 每周一 14:00 写周报 60 分钟
+"""
+
+        with self.assertRaisesRegex(ValueError, "一次只能创建一个任务"):
+            self.proposals.create(
+                request, now=datetime(2026, 8, 3, 8, 0, tzinfo=self.zone)
+            )
+
     def test_existing_database_receives_additive_task_columns(self) -> None:
         database = Path(self.temporary.name) / "legacy.sqlite3"
         import sqlite3

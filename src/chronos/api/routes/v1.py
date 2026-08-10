@@ -41,6 +41,27 @@ class V1Router:
                 )
             if method == "GET" and path == "/api/v1/agent/memory/items":
                 return HTTPStatus.OK, success({"items": self._agent_memory.list_context()})
+            item_prefix = "/api/v1/agent/memory/items/"
+            if path.startswith(item_prefix):
+                context_id = path.removeprefix(item_prefix)
+                if method == "PUT":
+                    return HTTPStatus.OK, success(
+                        self._agent_memory.update_context(
+                            context_id,
+                            content=str(payload.get("content", "")),
+                            category=(
+                                str(payload["category"])
+                                if payload.get("category") is not None
+                                else None
+                            ),
+                        )
+                    )
+                if method == "DELETE":
+                    if not self._agent_memory.delete_context(context_id):
+                        raise KeyError(context_id)
+                    return HTTPStatus.OK, success(
+                        {"deleted": True, "context_id": context_id}
+                    )
             candidate_prefix = "/api/v1/agent/memory/candidates/"
             if method == "POST" and path.startswith(candidate_prefix):
                 suffix = path.removeprefix(candidate_prefix)

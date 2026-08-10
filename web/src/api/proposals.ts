@@ -12,6 +12,9 @@ export interface ScheduleProposal {
   explanation: string[];
   conflicts: ProposalPayload["conflicts"];
   createdAt: number;
+  contextUsed: NonNullable<ProposalPayload["context_used"]>;
+  parserMode: NonNullable<ProposalPayload["parser_mode"]>;
+  parserWarnings: string[];
 }
 
 export async function createProposal(text: string): Promise<ScheduleProposal> {
@@ -61,6 +64,9 @@ function fromProposal(payload: ProposalPayload): ScheduleProposal {
     explanation: payload.explanation,
     conflicts: payload.conflicts,
     createdAt: new Date(payload.created_at).getTime(),
+    contextUsed: payload.context_used ?? [],
+    parserMode: payload.parser_mode ?? "deterministic",
+    parserWarnings: payload.parser_warnings ?? [],
   };
 }
 

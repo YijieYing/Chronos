@@ -25,6 +25,12 @@ export function TimelineCommand({
       {command.lines.map((line) => (
         <code key={line}>{line}</code>
       ))}
+      {!!command.contextUsed?.length && (
+        <details>
+          <summary>CONTEXT USED · {command.contextUsed.length}</summary>
+          {command.contextUsed.map((item) => <p key={item}>{item}</p>)}
+        </details>
+      )}
       {command.status === "proposed" ? (
         <div>
           <button onClick={() => onResolve(command.id, true)}>Accept</button>

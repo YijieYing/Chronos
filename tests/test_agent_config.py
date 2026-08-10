@@ -94,6 +94,52 @@ model = "deepseek-v4-flash"
         self.assertEqual(command.estimated_minutes, 60)
         self.assertIn("Prefer deep work", provider.system_prompts[0])
 
+    def test_semantic_parser_returns_the_exact_retrieved_context(self) -> None:
+        provider = _FakeProvider(
+            '{"type":"create_task","title":"写方案",'
+            '"preferred_start":"2026-08-04T14:00:00+08:00",'
+            '"estimated_minutes":60,"task_type":"creative"}'
+        )
+        selected = [{
+            "context_id": "memory-1",
+            "source": "chatgpt",
+            "category": "scheduling",
+            "content": "用户偏好上午进行深度工作",
+            "source_ref": "profile.md",
+            "score": 0.72,
+        }]
+        parser = SemanticScheduleCommandParser(
+            provider, memory_retriever=lambda query: selected
+        )
+
+        result = parser.parse_with_context(
+            "安排写方案",
+            datetime(2026, 8, 3, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            [],
+        )
+
+        self.assertEqual(result.context_used[0]["context_id"], "memory-1")
+        self.assertIn("用户偏好上午进行深度工作", provider.system_prompts[0])
+
+    def test_semantic_parser_preserves_recurrence(self) -> None:
+        provider = _FakeProvider(
+            '{"type":"create_task","title":"日语学习",'
+            '"preferred_start":"2026-08-03T09:00:00+08:00",'
+            '"estimated_minutes":30,"task_type":"research",'
+            '"recurrence":{"frequency":"weekly","weekdays":[1,3,5]}}'
+        )
+        parser = SemanticScheduleCommandParser(provider)
+
+        command = parser.parse(
+            "每周一、三、五上午九点学习日语",
+            datetime(2026, 8, 3, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            [],
+        )
+
+        self.assertEqual(
+            command.recurrence, {"frequency": "weekly", "weekdays": [1, 3, 5]}
+        )
+
     def test_profile_is_read_only_when_fingerprint_changes(self) -> None:
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "agent.md"

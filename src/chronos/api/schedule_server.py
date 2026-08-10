@@ -322,7 +322,7 @@ def main() -> int:
         and selected_provider.model
         and selected_provider.base_url
     )
-    command_parser = build_command_parser(agent_config, memory_service.accepted_context)
+    command_parser = build_command_parser(agent_config, memory_service.retrieve_context)
     proposal_service = ProposalService(service, proposal_repository, command_parser)
     v1_router = V1Router(service, proposal_service, memory_service)
     root = Path(__file__).resolve().parents[3] / "web" / "dist"

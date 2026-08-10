@@ -63,6 +63,12 @@ export function ChronosLog({
                       <span>RESULT</span>
                       <p>{entry.response}</p>
                     </div>
+                    {!!entry.contextUsed?.length && (
+                      <details className={styles.contextUsed}>
+                        <summary>CONTEXT USED · {entry.contextUsed.length}</summary>
+                        {entry.contextUsed.map((item) => <p key={item}>{item}</p>)}
+                      </details>
+                    )}
                     {entry.status === "applied" && (
                       <button
                         className={styles.restoreButton}

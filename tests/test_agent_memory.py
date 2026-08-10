@@ -131,6 +131,56 @@ class AgentMemoryImportTest(TestCase):
         )
         self.assertNotIn("Chronos 设计方向包括：", contents)
 
+    def test_retrieval_selects_relevant_accepted_context(self) -> None:
+        profile = """# Profile
+## 日程与精力规律
+- 用户偏好上午安排需要专注的任务
+## 设备与开发环境
+- 用户使用 Linux 服务器运行模型
+""".encode()
+        self.service.import_document("chatgpt", "profile.md", profile)
+        for candidate in self.service.list_candidates():
+            self.service.review(str(candidate["candidate_id"]), True)
+
+        selected = self.service.retrieve_context("帮我安排每周的深度工作任务")
+
+        self.assertEqual(len(selected), 1)
+        self.assertIn("上午", selected[0]["content"])
+        self.assertGreater(selected[0]["score"], 0)
+
+    def test_accepted_context_can_be_edited_and_forgotten(self) -> None:
+        self.service.import_document(
+            "chatgpt", "profile.md", "## 偏好\n- 用户偏好上午工作\n".encode()
+        )
+        candidate = self.service.list_candidates()[0]
+        self.service.review(str(candidate["candidate_id"]), True)
+        context = self.service.list_context()[0]
+
+        updated = self.service.update_context(
+            str(context["context_id"]), content="用户偏好下午工作"
+        )
+
+        self.assertEqual(updated["content"], "用户偏好下午工作")
+        self.assertEqual(updated["revision"], 2)
+        self.assertTrue(self.service.delete_context(str(context["context_id"])))
+        self.assertEqual(self.service.list_context(), [])
+
+    def test_new_snapshot_marks_possible_conflict(self) -> None:
+        self.service.import_document(
+            "chatgpt", "morning.md", "## 日程\n- 用户偏好上午安排会议\n".encode()
+        )
+        first = self.service.list_candidates()[0]
+        self.service.review(str(first["candidate_id"]), True)
+
+        imported = self.service.import_document(
+            "chatgpt", "afternoon.md", "## 日程\n- 用户偏好下午安排会议\n".encode()
+        )
+        candidate = self.service.list_candidates()[0]
+
+        self.assertEqual(imported["change_counts"]["possible_conflict"], 1)
+        self.assertEqual(candidate["change_type"], "possible_conflict")
+        self.assertIn("上午", candidate["related_content"])
+
 
 def _archive(conversations: list[dict[str, object]]) -> bytes:
     stream = io.BytesIO()

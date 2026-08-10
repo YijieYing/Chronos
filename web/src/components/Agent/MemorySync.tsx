@@ -3,7 +3,9 @@ import {
   loadAgentContext,
   loadMemoryCandidates,
   loadMemoryImports,
+  deleteAgentContext,
   reviewMemoryCandidate,
+  updateAgentContext,
   uploadMemoryDocument,
   type AgentContextItem,
   type MemoryCandidate,
@@ -118,6 +120,27 @@ export function MemorySync({ open, onClose }: MemorySyncProps) {
     }
   }
 
+  async function editContext(item: AgentContextItem) {
+    const content = window.prompt("编辑这条 Agent 记忆", item.content)?.trim();
+    if (!content || content === item.content) return;
+    try {
+      await updateAgentContext(item.context_id, content, item.category);
+      setContext(await loadAgentContext());
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function forgetContext(item: AgentContextItem) {
+    if (!window.confirm(`让 Chronos 忘记这条记忆？\n\n${item.content}`)) return;
+    try {
+      await deleteAgentContext(item.context_id);
+      setContext((current) => current.filter((value) => value.context_id !== item.context_id));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function copyProfilePrompt() {
     try {
       await navigator.clipboard.writeText(PROFILE_PROMPT);
@@ -201,9 +224,14 @@ export function MemorySync({ open, onClose }: MemorySyncProps) {
             <article className={styles.candidate} key={candidate.candidate_id}>
               <div className={styles.meta}>
                 <span>{candidate.category}</span>
-                <span>{candidate.source}</span>
+                <span data-change={candidate.change_type}>{candidate.change_type ?? candidate.source}</span>
               </div>
               <p>{candidate.content}</p>
+              {candidate.related_content && (
+                <p className={styles.relatedMemory}>
+                  Existing: {candidate.related_content}
+                </p>
+              )}
               <small title={candidate.source_ref}>{candidate.source_ref}</small>
               <div className={styles.reviewActions}>
                 <button onClick={() => void review(candidate.candidate_id, false)}>IGNORE</button>
@@ -218,8 +246,14 @@ export function MemorySync({ open, onClose }: MemorySyncProps) {
             <h3>Accepted context</h3>
             <span>{context.length} items</span>
           </div>
-          {context.slice(0, 8).map((item) => (
-            <p className={styles.contextItem} key={item.context_id}>{item.content}</p>
+          {context.map((item) => (
+            <div className={styles.contextItem} key={item.context_id}>
+              <p>{item.content}</p>
+              <div>
+                <button onClick={() => void editContext(item)}>EDIT</button>
+                <button onClick={() => void forgetContext(item)}>FORGET</button>
+              </div>
+            </div>
           ))}
         </section>
 

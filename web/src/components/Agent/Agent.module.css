@@ -183,6 +183,10 @@
   font: 650 10px/1 "SFMono-Regular", Consolas, monospace;
 }
 
+.contextUsed { margin-top: 10px; color: #60746c; font-size: 10px; }
+.contextUsed summary { cursor: pointer; color: #43806a; font: 700 8px/1.4 monospace; letter-spacing: .08em; }
+.contextUsed p { margin: 7px 0 0; padding-left: 9px; border-left: 1px solid #bdd3ca; line-height: 1.4; }
+
 @media (max-width: 640px) {
   .commandHint { display: none; }
   .commandBar {

@@ -5,6 +5,29 @@ not part of the current implementation. Each item should state its current limit
 outcome, and delivery checkpoints. Completed work should move to release notes or architecture
 documentation instead of remaining here.
 
+## Multi-task and week-horizon Agent planning
+
+### Current limitation
+
+Agent commands now carry daily/weekly recurrence and exact clock times are fixed instead of silently
+shifted. The safe interface still accepts exactly one task per proposal. A recurring series is
+stored once and expanded for display, while the Schedule planner validates the base occurrence; it
+does not yet create one atomic, conflict-checked proposal for an entire multi-task day or week plan.
+
+### Intended outcome
+
+- Parse a plan into an explicit command batch without using the full prompt as any task title.
+- Preview all affected dates and recurring occurrences over a visible horizon.
+- Distinguish fixed times, preferred windows, deadlines, and “find a suitable time” intent.
+- Accept or reject the batch atomically, with per-occurrence conflicts and explanations.
+
+### Delivery checkpoints
+
+1. Add versioned `ScheduleCommandBatch` and clarification/error contracts.
+2. Add day/week preview APIs with base plan versions for every affected date.
+3. Project recurring occurrences on the backend and validate a configurable future horizon.
+4. Add batch proposal review with per-task edits before acceptance.
+
 ## Background monitoring independent of the UI
 
 ### Current lifecycle
@@ -48,12 +71,12 @@ This is a planned capability, not implemented yet.
 
 ### Current limitation
 
-The Agent now loads a Git-ignored personal Markdown profile through a content-hash cache. It also
-accepts GPT/Claude-generated Markdown profiles and ChatGPT/Claude export ZIPs, retains them locally,
-parses them without model upload, deduplicates them, and presents reviewable candidates; accepted
-items enter the semantic-provider context. The Agent does not yet retrieve only relevant items,
-model contradictions, or synchronize directly from Codex, ChatGPT, Claude, Octopus, or other live
-sources.
+The Agent now loads a Git-ignored personal Markdown profile through a content-hash cache. It accepts
+GPT/Claude-generated Markdown profiles and ChatGPT/Claude export ZIPs, retains them locally, parses
+them without model upload, and presents reviewable candidates. Imports flag possible updates and
+conflicts; accepted items can be edited or forgotten. Request-time local retrieval selects relevant
+accepted memories and proposals persist the exact context used. The Agent does not yet synchronize
+directly from Codex, ChatGPT, Claude, Octopus, or other live sources.
 
 ### Intended outcome
 
@@ -71,17 +94,15 @@ sources.
 
 ### Delivery checkpoints
 
-1. Add contradiction/change detection between import snapshots instead of content-hash deduplication
-   alone, plus explicit deletion of accepted context items.
-2. Expose a reverse-sync MCP/App tool so ChatGPT, Codex, or Claude can submit reviewed candidate
+1. Expose a reverse-sync MCP/App tool so ChatGPT, Codex, or Claude can submit reviewed candidate
    memories to Chronos from inside an authenticated conversation without sharing account cookies.
-3. Keep provider OAuth adapters behind a capability interface. Enable direct account sync only when
+2. Keep provider OAuth adapters behind a capability interface. Enable direct account sync only when
    a provider publishes an authorization scope and API for conversations or memories; ordinary
    “Sign in with ChatGPT” identity is not treated as data access.
-4. Add relevance selection and a visible “context used” section to every proposal explanation.
-5. Add opt-in adapters for Schedule, Monitor summaries, notes, calendar, Codex/ChatGPT exports, and
+3. Add opt-in adapters for Schedule, Monitor summaries, notes, calendar, Codex/ChatGPT exports, and
    Octopus imports.
-6. Add conflict resolution, retention controls, redaction, and encrypted-at-rest options.
+4. Add stronger conflict resolution, retention controls, redaction, encrypted-at-rest options, and
+   reversible restore for edited or forgotten context.
 
 ### Provider account constraints
 

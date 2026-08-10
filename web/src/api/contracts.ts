@@ -37,6 +37,16 @@ export interface ProposalPayload {
   changes: Array<{ operation: string; task_id: string; summary: string }>;
   conflicts: Array<{ task_id: string; reason: string; remaining_minutes: number }>;
   explanation: string[];
+  context_used?: Array<{
+    context_id: string;
+    source: string;
+    category: string;
+    content: string;
+    source_ref: string;
+    score: number;
+  }>;
+  parser_mode?: "semantic" | "deterministic" | "deterministic_fallback";
+  parser_warnings?: string[];
   created_at: string;
   updated_at: string;
 }

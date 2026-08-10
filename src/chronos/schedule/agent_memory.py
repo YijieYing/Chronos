@@ -55,6 +55,7 @@ class AgentMemoryService:
             text = _decode_text(data)
             candidates = _markdown_candidate_rows(source, import_id, text, filename, now)
             messages_scanned = len(candidates)
+        candidates = _annotate_candidate_changes(candidates, self._repository.list_context())
         archive_path = self._store_document(source, filename, digest, data, now)
         created = self._repository.add_candidates(candidates)
         imported = self._repository.save_import(
@@ -70,7 +71,11 @@ class AgentMemoryService:
                 "created_at": now.isoformat(),
             }
         )
-        return {**imported, "duplicate": False}
+        change_counts = {
+            kind: sum(1 for item in candidates if item.get("change_type") == kind)
+            for kind in ("new", "possible_update", "possible_conflict")
+        }
+        return {**imported, "duplicate": False, "change_counts": change_counts}
 
     def list_imports(self) -> list[dict[str, object]]:
         return self._repository.list_imports()
@@ -86,7 +91,76 @@ class AgentMemoryService:
     def list_context(self) -> list[dict[str, object]]:
         return self._repository.list_context()
 
-    def accepted_context(self) -> str:
+    def update_context(
+        self, context_id: str, *, content: str, category: str | None = None
+    ) -> dict[str, object]:
+        clean_content = content.strip()
+        if not _usable_markdown_item(clean_content):
+            raise ValueError("memory content must be between 3 and 500 characters")
+        current = next(
+            (
+                item
+                for item in self._repository.list_context()
+                if item["context_id"] == context_id
+            ),
+            None,
+        )
+        if current is None:
+            raise KeyError(context_id)
+        clean_category = (category or str(current["category"])).strip().casefold()
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", clean_category):
+            raise ValueError("memory category must be a short lowercase identifier")
+        updated = self._repository.update_context(
+            context_id, content=clean_content, category=clean_category
+        )
+        self._context_loaded = False
+        return updated
+
+    def delete_context(self, context_id: str) -> bool:
+        deleted = self._repository.delete_context(context_id)
+        if deleted:
+            self._context_loaded = False
+        return deleted
+
+    def retrieve_context(self, query: str, limit: int = 8) -> list[dict[str, object]]:
+        if limit < 1 or limit > 20:
+            raise ValueError("memory retrieval limit must be between 1 and 20")
+        query_tokens = _memory_tokens(query)
+        category_hints = _query_category_hints(query)
+        ranked: list[tuple[float, dict[str, object]]] = []
+        for item in self._repository.list_context():
+            item_tokens = _memory_tokens(str(item["content"]))
+            overlap = len(query_tokens & item_tokens) / max(
+                1, len(query_tokens | item_tokens)
+            )
+            containment = len(query_tokens & item_tokens) / max(
+                1, min(len(query_tokens), len(item_tokens))
+            )
+            category_bonus = category_hints.get(str(item["category"]), 0.0)
+            score = overlap * 0.55 + containment * 0.45 + category_bonus
+            if score >= 0.16:
+                ranked.append((score, item))
+        ranked.sort(
+            key=lambda pair: (pair[0], str(pair[1]["updated_at"])), reverse=True
+        )
+        return [
+            {
+                "context_id": item["context_id"],
+                "source": item["source"],
+                "category": item["category"],
+                "content": item["content"],
+                "source_ref": item["source_ref"],
+                "score": round(score, 3),
+            }
+            for score, item in ranked[:limit]
+        ]
+
+    def accepted_context(self, query: str | None = None) -> str:
+        if query is not None:
+            items = self.retrieve_context(query)
+            return "\n".join(
+                f"- [{item['category']}] {item['content']}" for item in items
+            )
         if self._context_loaded:
             return self._context_cache
         items = self._repository.list_context()
@@ -328,6 +402,105 @@ def _heading_category(heading: str) -> str:
     if re.search(r"兴趣|爱好|interest|hobby", heading, re.I):
         return "interest"
     return "personal"
+
+
+def _annotate_candidate_changes(
+    candidates: list[dict[str, object]], contexts: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    for candidate in candidates:
+        content = str(candidate["content"])
+        best: tuple[float, dict[str, object]] | None = None
+        for context in contexts:
+            if context["category"] != candidate["category"]:
+                continue
+            similarity = _memory_similarity(content, str(context["content"]))
+            if best is None or similarity > best[0]:
+                best = (similarity, context)
+        candidate["change_type"] = "new"
+        if best is None or best[0] < 0.38:
+            continue
+        related = best[1]
+        candidate["related_context_id"] = related["context_id"]
+        candidate["related_content"] = related["content"]
+        candidate["change_type"] = (
+            "possible_conflict"
+            if _possibly_conflicts(content, str(related["content"]))
+            else "possible_update"
+        )
+    return candidates
+
+
+def _memory_similarity(left: str, right: str) -> float:
+    left_tokens = _memory_tokens(left)
+    right_tokens = _memory_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    overlap = len(left_tokens & right_tokens)
+    jaccard = overlap / len(left_tokens | right_tokens)
+    containment = overlap / min(len(left_tokens), len(right_tokens))
+    return jaccard * 0.45 + containment * 0.55
+
+
+def _memory_tokens(value: str) -> set[str]:
+    normalized = re.sub(r"\s+", "", value.casefold())
+    latin = set(re.findall(r"[a-z0-9][a-z0-9_-]+", normalized))
+    han_runs = re.findall(r"[\u3400-\u9fff]+", normalized)
+    han_pairs = {
+        run[index:index + 2]
+        for run in han_runs
+        for index in range(max(0, len(run) - 1))
+    }
+    return latin | han_pairs
+
+
+def _query_category_hints(query: str) -> dict[str, float]:
+    hints: dict[str, float] = {}
+    if re.search(
+        r"安排|日程|时间|任务|会议|周期|每天|每周|schedule|calendar|task|meeting",
+        query,
+        re.I,
+    ):
+        hints.update(
+            {
+                "scheduling": 0.34,
+                "preference": 0.08,
+                "work": 0.05,
+                "collaboration": 0.05,
+            }
+        )
+    if re.search(r"学习|研究|论文|课程|learn|research|paper|course", query, re.I):
+        hints["learning"] = 0.28
+    if re.search(
+        r"设备|电脑|手机|系统|环境|device|computer|phone|environment",
+        query,
+        re.I,
+    ):
+        hints["environment"] = 0.28
+    if re.search(r"偏好|喜欢|习惯|风格|prefer|like|habit|style", query, re.I):
+        hints["preference"] = 0.3
+    return hints
+
+
+def _possibly_conflicts(left: str, right: str) -> bool:
+    negation = re.compile(r"不|不要|避免|拒绝|never|not|don't|avoid", re.I)
+    if bool(negation.search(left)) != bool(negation.search(right)):
+        return True
+    time_groups = [
+        {"上午", "早上", "morning"},
+        {"下午", "afternoon"},
+        {"晚上", "夜间", "evening", "night"},
+    ]
+    left_groups = {
+        index
+        for index, group in enumerate(time_groups)
+        if any(word in left.casefold() for word in group)
+    }
+    right_groups = {
+        index
+        for index, group in enumerate(time_groups)
+        if any(word in right.casefold() for word in group)
+    }
+    return bool(left_groups and right_groups and left_groups != right_groups)
 
 
 def _personal_statements(text: str) -> list[str]:

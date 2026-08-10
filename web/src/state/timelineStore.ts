@@ -424,6 +424,7 @@ function proposalToCommand(proposal: ScheduleProposal): AgentCommand {
       proposal.conflicts.length
         ? `${proposal.conflicts.length} conflict(s) reported`
         : "Planner verified",
+      ...proposal.parserWarnings,
     ],
     status:
       proposal.status === "pending"
@@ -432,6 +433,7 @@ function proposalToCommand(proposal: ScheduleProposal): AgentCommand {
           ? "accepted"
           : "rejected",
     proposedTask: proposal.task,
+    contextUsed: proposal.contextUsed.map((item) => item.content),
   };
 }
 
@@ -445,7 +447,11 @@ function proposalToLog(proposal: ScheduleProposal): ChronosLogEntry {
     id: proposal.id,
     time: proposal.createdAt,
     request: proposal.request,
-    response: [proposal.explanation.join(" "), resultSummary].filter(Boolean).join(" "),
+    response: [
+      ...proposal.parserWarnings,
+      proposal.explanation.join(" "),
+      resultSummary,
+    ].filter(Boolean).join(" "),
     status:
       proposal.status === "informational"
         ? "info"
@@ -458,6 +464,7 @@ function proposalToLog(proposal: ScheduleProposal): ChronosLogEntry {
             : "rejected",
     addedTaskId: proposal.changes[0]?.operation === "add" ? proposal.task?.id : undefined,
     proposalId: proposal.id,
+    contextUsed: proposal.contextUsed.map((item) => item.content),
   };
 }
 
