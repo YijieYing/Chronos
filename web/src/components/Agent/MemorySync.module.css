@@ -1,0 +1,105 @@
+.backdrop {
+  position: fixed;
+  z-index: 39;
+  inset: 0;
+  border: 0;
+  background: rgba(38, 52, 47, 0.16);
+  backdrop-filter: blur(4px);
+}
+
+.drawer {
+  position: fixed;
+  z-index: 40;
+  top: 0;
+  right: 0;
+  width: min(520px, 94vw);
+  height: 100vh;
+  padding: 26px;
+  overflow-y: auto;
+  border-left: 1px solid rgba(42, 73, 62, 0.16);
+  background: rgba(244, 248, 244, 0.98);
+  box-shadow: -20px 0 70px rgba(42, 61, 54, 0.16);
+}
+
+.drawer header, .sectionTitle, .meta, .reviewActions, .importRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.drawer header span, .sectionTitle span, .meta, .importRow span {
+  color: #248362;
+  font: 700 9px/1.2 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.drawer h2 { margin: 6px 0 0; color: #20332c; font-size: 25px; }
+.close { border: 0; background: transparent; color: #50645c; font-size: 25px; }
+
+.sourceTabs { display: flex; gap: 7px; margin: 24px 0 10px; }
+.sourceTabs button {
+  padding: 8px 12px;
+  border: 1px solid #d5e1dc;
+  border-radius: 8px;
+  background: transparent;
+  color: #71817b;
+  font: 700 9px/1 monospace;
+  text-transform: uppercase;
+}
+.sourceTabs button[data-active="true"] { background: #294139; color: white; }
+
+.promptCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+  padding: 13px 14px;
+  border: 1px solid #d9e5e0;
+  border-radius: 11px;
+  background: rgba(255,255,255,.5);
+}
+.promptCard strong { color: #3d6556; font: 750 9px/1 monospace; letter-spacing: .12em; }
+.promptCard p { margin: 5px 0 0; color: #7a8983; font-size: 10px; line-height: 1.4; }
+.promptCard button {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border: 1px solid #90b4a6;
+  border-radius: 7px;
+  background: transparent;
+  color: #287457;
+  font: 700 8px/1 monospace;
+}
+
+.dropZone {
+  padding: 28px 18px;
+  border: 1px dashed #a9c4b9;
+  border-radius: 14px;
+  background: rgba(255,255,255,.58);
+  text-align: center;
+  cursor: pointer;
+}
+.dropZone[data-dragging="true"] { border-color: #1e9870; background: #edf7f2; }
+.dropZone strong { color: #247c5d; font: 750 11px/1 monospace; letter-spacing: .13em; }
+.dropZone p, .empty { margin: 8px 0 0; color: #7a8983; font-size: 11px; }
+.message { padding: 10px 12px; border-radius: 8px; background: #eaf3ef; color: #47685b; font-size: 11px; }
+
+.section { margin-top: 26px; }
+.sectionTitle h3 { margin: 0; color: #32483f; font-size: 13px; }
+.candidate {
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid #dce6e2;
+  border-radius: 12px;
+  background: rgba(255,255,255,.78);
+}
+.candidate > p { margin: 11px 0 8px; color: #2e413a; font-size: 12px; line-height: 1.5; }
+.candidate small { display: block; overflow: hidden; color: #8a9893; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.reviewActions { justify-content: flex-end; gap: 7px; margin-top: 12px; }
+.reviewActions button { padding: 7px 10px; border: 1px solid #cedbd6; border-radius: 7px; background: transparent; color: #65756f; font: 700 8px/1 monospace; }
+.reviewActions button[data-primary] { border-color: #2b8e6c; background: #2b8e6c; color: white; }
+.contextItem { margin: 8px 0 0; padding: 9px 11px; border-left: 2px solid #86af9f; background: #edf3f0; color: #52675f; font-size: 11px; }
+.importRow { gap: 9px; margin-top: 8px; padding: 9px 0; border-bottom: 1px solid #e0e8e4; }
+.importRow p { flex: 1; margin: 0; overflow: hidden; color: #61726b; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.importRow b { color: #789087; font: 700 10px/1 monospace; }

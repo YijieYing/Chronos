@@ -33,6 +33,20 @@ and explicit schedule commands. It may publish events such as:
 Schedule can operate without Monitor. It does not infer actual behavior and does not automatically
 react to work-state updates.
 
+The HTTP timeline is a projection of Schedule tasks and activated plan blocks, not a separate
+write model. The former `timeline_tasks` storage is a migration source only. User edits and Agent
+requests both become Schedule commands; Agent commands first produce a persisted draft proposal
+and require explicit acceptance before changing tasks or activating a plan.
+
+Natural-language parsing is an input adapter behind `ScheduleCommandParser`; it produces typed
+create, update, delete, or query commands. This keeps a future semantic-model provider separate from
+planner rules, persistence, stale-plan checks, and confirmation policy.
+
+The first Schedule prototype uses a deterministic daily planner over the full 24-hour day. It sorts
+eligible tasks by priority, deadline, and creation time; subtracts fixed constraints; splits tasks
+only when allowed; and records any remainder explicitly. Generated plans are immutable, versioned
+drafts until the user activates one.
+
 ### Adaptation
 
 Adaptation compares intent from Schedule with evidence from Monitor and decides whether intervention
@@ -98,6 +112,10 @@ src/chronos/
 
 The native macOS collector remains under `apps/mac-agent`; it is an external adapter that speaks the
 Monitor Observation contract, not part of the Schedule domain.
+
+The thin desktop shell under `apps/mac-app` hosts the React frontend in `WKWebView`. It owns window
+behavior, navigation policy, resource loading, and the native bridge, but no Monitor or Schedule
+business logic.
 
 The initial package does not need every file in this target tree. Directories should appear when the
 corresponding behavior exists. Avoid a generic `shared` domain folder: identifiers, clocks, and event

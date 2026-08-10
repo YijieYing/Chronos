@@ -10,11 +10,18 @@
 .env
 .env.*
 !.env.example
+config/*.local.toml
+config/*.local.md
+/profile*.md
 
 # Logs and runtime artifacts
 *.log
 tmp/
 data/
+node_modules/
+*.tsbuildinfo
+apps/mac-app/Sources/ChronosMacApp/Resources/Web/*
+!apps/mac-app/Sources/ChronosMacApp/Resources/Web/.gitkeep
 
 # Python
 __pycache__/

@@ -1,0 +1,192 @@
+.commandBar {
+  position: fixed;
+  z-index: 20;
+  left: 50%;
+  bottom: 22px;
+  display: grid;
+  grid-template-columns: auto minmax(180px, 620px) auto auto;
+  align-items: center;
+  width: min(760px, calc(100vw - 40px));
+  padding: 9px 10px 9px 18px;
+  border: 1px solid rgba(49, 78, 69, 0.18);
+  border-radius: 18px;
+  background: rgba(247, 250, 247, 0.88);
+  box-shadow: 0 18px 55px rgba(45, 66, 58, 0.14);
+  backdrop-filter: blur(24px);
+  transform: translateX(-50%);
+}
+
+.prompt {
+  color: #1a956c;
+  font: 700 18px/1 "SFMono-Regular", Consolas, monospace;
+}
+
+.commandBar input {
+  min-width: 0;
+  padding: 8px 12px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #1d2b27;
+  font: 500 14px/1.4 "SFMono-Regular", Consolas, monospace;
+}
+
+.commandBar input::placeholder { color: #81908b; }
+
+.commandHint {
+  margin-right: 10px;
+  color: #9aa6a2;
+  font: 600 10px/1 "SFMono-Regular", Consolas, monospace;
+  white-space: nowrap;
+}
+
+.commandBar > button {
+  padding: 10px 17px;
+  border: 0;
+  border-radius: 11px;
+  background: #263b34;
+  color: #ecfff7;
+  font: 700 10px/1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.12em;
+}
+
+.logBackdrop {
+  position: fixed;
+  z-index: 29;
+  inset: 0;
+  border: 0;
+  background: rgba(46, 60, 55, 0.12);
+  backdrop-filter: blur(3px);
+}
+
+.logDrawer {
+  position: fixed;
+  z-index: 30;
+  top: 0;
+  right: 0;
+  width: min(440px, 92vw);
+  height: 100vh;
+  padding: 26px;
+  border-left: 1px solid rgba(42, 73, 62, 0.16);
+  background: rgba(244, 248, 244, 0.97);
+  box-shadow: -20px 0 70px rgba(42, 61, 54, 0.14);
+  overflow-y: auto;
+}
+
+.logDrawer header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+
+.eyebrow {
+  color: #1b956c;
+  font: 700 9px/1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.18em;
+}
+
+.logDrawer h2 {
+  margin: 7px 0 0;
+  color: #20332c;
+  font-size: 24px;
+  font-weight: 560;
+}
+
+.iconButton {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #d7e0dc;
+  border-radius: 50%;
+  background: white;
+  color: #40534c;
+  font-size: 21px;
+}
+
+.logList { display: grid; gap: 13px; }
+
+.emptyLog {
+  padding: 38px 20px;
+  border: 1px dashed #cbd7d2;
+  border-radius: 15px;
+  color: #73827d;
+  text-align: center;
+  font-size: 13px;
+}
+
+.logEntry {
+  padding: 16px;
+  border: 1px solid #dce5e1;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.logMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #82908b;
+  font: 600 9px/1 "SFMono-Regular", Consolas, monospace;
+  text-transform: uppercase;
+}
+
+.logMeta span {
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: #edf4f0;
+  color: #4e7768;
+}
+
+.logMeta span[data-status="rejected"],
+.logMeta span[data-status="restored"] {
+  color: #7e6754;
+  background: #f4eee8;
+}
+
+.logRequest {
+  margin: 13px 0;
+  color: #263831;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.changeSet {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  gap: 7px 10px;
+  padding: 11px;
+  border-radius: 9px;
+  background: #f1f5f2;
+}
+
+.changeSet span {
+  color: #84928d;
+  font: 700 8px/1.4 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.08em;
+}
+
+.changeSet p {
+  margin: 0;
+  color: #54665f;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.restoreButton {
+  width: 100%;
+  margin-top: 11px;
+  padding: 9px;
+  border: 1px solid #bed3ca;
+  border-radius: 8px;
+  background: transparent;
+  color: #35725c;
+  font: 650 10px/1 "SFMono-Regular", Consolas, monospace;
+}
+
+@media (max-width: 640px) {
+  .commandHint { display: none; }
+  .commandBar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    bottom: 12px;
+  }
+}
