@@ -349,6 +349,44 @@ class ScheduleV1Test(TestCase):
             ["每天"],
         )
 
+    def test_overlapping_agent_tasks_return_proposal_conflicts(self) -> None:
+        now = datetime(2026, 8, 13, 8, 0, tzinfo=self.zone)
+        interpretation = AgentInterpretation(
+            intent="create_schedule",
+            tasks=tuple(
+                InterpretedTask(
+                    title=title,
+                    title_source=title,
+                    duration_minutes=60,
+                    duration_source="一小时",
+                    preferred_start=now.replace(hour=13),
+                    temporal_source="下午一点到两点",
+                    task_type="research",
+                    recurrence={"frequency": "daily", "until": "2026-08-16"},
+                    recurrence_sources={
+                        "frequency": ("每天",),
+                        "until": ("到本周末",),
+                    },
+                    fixed=True,
+                )
+                for title in ("阅读", "词汇")
+            ),
+        )
+        service = ProposalService(
+            self.schedule,
+            SQLiteProposalRepository(Path(self.temporary.name) / "chronos.sqlite3"),
+            _InterpretationParser(interpretation),
+        )
+
+        proposal = service.create("private overlapping regression", now=now)
+
+        self.assertEqual(proposal["status"], "pending")
+        self.assertEqual(len(proposal["conflicts"]), 4)
+        self.assertEqual(
+            {item["reason"] for item in proposal["conflicts"]},
+            {"fixed_time_conflict"},
+        )
+
     def test_existing_database_receives_additive_task_columns(self) -> None:
         database = Path(self.temporary.name) / "legacy.sqlite3"
         import sqlite3

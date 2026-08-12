@@ -40,7 +40,25 @@ class DailyPlanner:
         candidates.sort(key=_task_sort_key)
         fixed_tasks = [task for task in candidates if task.fixed]
         flexible_tasks = [task for task in candidates if not task.fixed]
-        fixed_task_blocks = [_fixed_task_block(task) for task in fixed_tasks]
+        fixed_task_blocks: list[ScheduleBlock] = []
+        unscheduled: list[UnscheduledTask] = []
+        occupied = [(block.start_at, block.end_at) for block in fixed_blocks]
+        for task in fixed_tasks:
+            block = _fixed_task_block(task)
+            if (
+                block.start_at < availability.start_at
+                or block.end_at > availability.end_at
+            ):
+                unscheduled.append(_unscheduled_fixed(task, "fixed_time_outside_availability"))
+                continue
+            if any(
+                _overlaps(block.start_at, block.end_at, start_at, end_at)
+                for start_at, end_at in occupied
+            ):
+                unscheduled.append(_unscheduled_fixed(task, "fixed_time_conflict"))
+                continue
+            fixed_task_blocks.append(block)
+            occupied.append((block.start_at, block.end_at))
         task_constraints = [
             FixedBlock(
                 block_id=f"task:{block.block_id}",
@@ -53,7 +71,6 @@ class DailyPlanner:
         ]
         free_windows = calculate_free_windows(availability, [*fixed_blocks, *task_constraints])
         blocks: list[ScheduleBlock] = list(fixed_task_blocks)
-        unscheduled: list[UnscheduledTask] = []
 
         for task in flexible_tasks:
             remaining = task.estimated_minutes
@@ -157,6 +174,24 @@ def _fixed_task_block(task: Task) -> ScheduleBlock:
         end_at=task.preferred_start + timedelta(minutes=task.estimated_minutes),
         flexibility="fixed",
     )
+
+
+def _unscheduled_fixed(task: Task, reason: str) -> UnscheduledTask:
+    return UnscheduledTask(
+        task_id=task.task_id,
+        title=task.title,
+        remaining_minutes=task.estimated_minutes,
+        reason=reason,
+    )
+
+
+def _overlaps(
+    left_start: datetime,
+    left_end: datetime,
+    right_start: datetime,
+    right_end: datetime,
+) -> bool:
+    return left_start < right_end and right_start < left_end
 
 
 def _occurrence_for_date(task: Task, target_date: date) -> Task | None:

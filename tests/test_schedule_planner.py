@@ -77,6 +77,23 @@ class DailyPlannerTest(TestCase):
 
         self.assertEqual(plan.unscheduled[0].remaining_minutes, 120)
 
+    def test_overlapping_fixed_tasks_become_explainable_conflict(self) -> None:
+        first = self._task("first", "First", 60, priority=5, fixed=True)
+        second = self._task("second", "Second", 60, priority=4, fixed=True)
+
+        plan = DailyPlanner().generate(
+            tasks=[first, second],
+            fixed_blocks=[],
+            availability=self.availability,
+            target_date=self.day,
+            timezone="UTC",
+            version=1,
+        )
+
+        self.assertEqual([block.task_id for block in plan.blocks], ["first"])
+        self.assertEqual(plan.unscheduled[0].task_id, "second")
+        self.assertEqual(plan.unscheduled[0].reason, "fixed_time_conflict")
+
     def _task(
         self,
         task_id: str,
@@ -85,6 +102,7 @@ class DailyPlannerTest(TestCase):
         *,
         priority: int,
         min_chunk: int = 25,
+        fixed: bool = False,
     ) -> Task:
         return Task(
             task_id=task_id,
@@ -95,4 +113,6 @@ class DailyPlannerTest(TestCase):
             created_at=self.start,
             splittable=True,
             min_chunk_minutes=min_chunk,
+            preferred_start=self.start if fixed else None,
+            fixed=fixed,
         )

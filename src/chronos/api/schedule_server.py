@@ -292,6 +292,11 @@ class ScheduleRequestHandler(BaseHTTPRequestHandler):
             target = error.args[0] if error.args else path
             self._error(HTTPStatus.NOT_FOUND, f"not found: {target}")
         except (TypeError, ValueError) as error:
+            if path == "/api/v1/proposals":
+                print(
+                    f"Agent request rejected: {type(error).__name__}: {error}",
+                    flush=True,
+                )
             self._error(HTTPStatus.BAD_REQUEST, str(error))
         except RuntimeError as error:
             print(

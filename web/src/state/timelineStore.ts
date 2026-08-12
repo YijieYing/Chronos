@@ -37,14 +37,13 @@ export function useTimelineStore() {
       .then(([storedTasks, storedProposals]) => {
         if (!active) return;
         if (!hasLocalMutation.current) setTasks(storedTasks);
+        const latestProposal = storedProposals[0];
         setCommands(
-          storedProposals
-            .filter(
-              (proposal) =>
-                proposal.status === "pending" ||
-                proposal.status === "needs_clarification",
-            )
-            .map(proposalToCommand),
+          latestProposal &&
+            (latestProposal.status === "pending" ||
+              latestProposal.status === "needs_clarification")
+            ? [proposalToCommand(latestProposal)]
+            : [],
         );
         setLogs(storedProposals.map(proposalToLog));
         setStorageStatus("ready");
