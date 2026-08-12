@@ -55,6 +55,18 @@ eligible tasks by priority, deadline, and creation time; subtracts fixed constra
 only when allowed; and records any remainder explicitly. Generated plans are immutable, versioned
 drafts until the user activates one.
 
+### Reminder / Beacon
+
+Reminder is an independent bounded context and SQLite model. It never becomes a short Task or a
+ScheduleBlock and therefore does not reserve planner capacity or contribute to planned cognitive
+load. A point trigger owns one timestamp; a window trigger owns start/end bounds and is rendered as
+a light bracket plus a beacon. Agent-created reminders use the same persisted proposal and explicit
+confirmation policy as Schedule mutations.
+
+The first version stores `exact` and `context-aware` delivery intent. It persists, renders, and confirms
+that intent, but Monitor-driven delivery selection is deliberately deferred; storing the contract
+does not imply that an interruptibility engine already exists.
+
 ### Adaptation
 
 Adaptation compares intent from Schedule with evidence from Monitor and decides whether intervention

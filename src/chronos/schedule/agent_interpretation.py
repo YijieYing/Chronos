@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 from chronos.schedule.commands import ScheduleCommand
 from chronos.schedule.models import Task
 
-InterpretationIntent = Literal["create_schedule", "single_command"]
+InterpretationIntent = Literal["create_schedule", "create_reminder", "single_command"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,9 +33,24 @@ class InterpretedTask:
 
 
 @dataclass(frozen=True, slots=True)
+class InterpretedReminder:
+    title: str
+    title_source: str
+    trigger_type: Literal["time", "window"]
+    trigger_at: datetime | None
+    window_start: datetime | None
+    window_end: datetime | None
+    temporal_sources: tuple[str, ...]
+    delivery: Literal["exact", "context-aware"]
+    delivery_sources: tuple[str, ...] = ()
+    priority: int = 3
+
+
+@dataclass(frozen=True, slots=True)
 class AgentInterpretation:
     intent: InterpretationIntent
     tasks: tuple[InterpretedTask, ...]
+    reminders: tuple[InterpretedReminder, ...] = ()
     unresolved: tuple[UnresolvedField, ...] = ()
     assumptions: tuple[str, ...] = ()
     context_used: tuple[dict[str, object], ...] = ()

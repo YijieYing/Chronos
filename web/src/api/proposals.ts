@@ -18,6 +18,7 @@ export interface ScheduleProposal {
   proposedTasks: NonNullable<ProposalPayload["proposed_tasks"]>;
   clarifications: NonNullable<ProposalPayload["clarifications"]>;
   assumptions: string[];
+  reminderDrafts: NonNullable<ProposalPayload["reminder_drafts"]>;
 }
 
 export async function createProposal(text: string): Promise<ScheduleProposal> {
@@ -73,6 +74,7 @@ function fromProposal(payload: ProposalPayload): ScheduleProposal {
     proposedTasks: payload.proposed_tasks ?? [],
     clarifications: payload.clarifications ?? [],
     assumptions: payload.assumptions ?? [],
+    reminderDrafts: payload.reminder_drafts ?? [],
   };
 }
 

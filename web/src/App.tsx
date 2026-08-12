@@ -3,6 +3,7 @@ import { AgentInput } from "./components/Agent/AgentInput";
 import { ChronosLog } from "./components/Agent/ChronosLog";
 import { MemorySync } from "./components/Agent/MemorySync";
 import { TaskComposer } from "./components/TaskComposer";
+import { ReminderComposer } from "./components/ReminderComposer";
 import { OverviewMap } from "./components/Overview/OverviewMap";
 import { WaveTimeline } from "./components/Timeline/WaveTimeline";
 import {
@@ -25,6 +26,9 @@ export default function App() {
   const liveMonitor = useLiveMonitor();
   const [now, setNow] = useState(Date.now());
   const [composerOpen, setComposerOpen] = useState(false);
+  const [reminderOpen, setReminderOpen] = useState(false);
+  const [reminderStart, setReminderStart] = useState(Date.now());
+  const [creationChoice, setCreationChoice] = useState<number | null>(null);
   const [composerStart, setComposerStart] = useState(Date.now());
   const [editingTask, setEditingTask] = useState<TimelineTask | null>(null);
   const [logOpen, setLogOpen] = useState(false);
@@ -62,6 +66,7 @@ export default function App() {
     setComposerStart(time);
     setComposerOpen(true);
   }
+  function chooseCreation(time: number) { setCreationChoice(time); }
 
   function openTaskEditor(task: TimelineTask) {
     setEditingTask(task);
@@ -104,6 +109,10 @@ export default function App() {
           <button onClick={() => setOverviewOpen(true)}>OVERVIEW</button>
           <button onClick={() => setMemoryOpen(true)}>MEMORY SYNC</button>
           <button onClick={() => openComposer()}>＋ TASK</button>
+          <button onClick={() => {
+            setReminderStart(Date.now());
+            setReminderOpen(true);
+          }}>◇ REMINDER</button>
           <button onClick={() => setLogOpen(true)}>
             OPEN CHRONOS LOG
             {timeline.logs.length > 0 && <em>{timeline.logs.length}</em>}
@@ -131,10 +140,11 @@ export default function App() {
       <WaveTimeline
         now={now}
         tasks={predictedTasks}
+        reminders={timeline.reminders}
         intelligence={intelligence}
         commands={timeline.commands}
         focusTarget={timeline.focusTarget}
-        onCreateAt={openComposer}
+        onCreateAt={chooseCreation}
         onEditTask={openTaskEditor}
         onResolveCommand={timeline.resolveCommand}
       />
@@ -143,6 +153,7 @@ export default function App() {
       <OverviewMap
         open={overviewOpen}
         tasks={timeline.tasks}
+        reminders={timeline.reminders}
         logs={timeline.logs}
         onClose={() => setOverviewOpen(false)}
         onOpenLog={() => setLogOpen(true)}
@@ -162,6 +173,11 @@ export default function App() {
         onUpdate={timeline.updateTask}
         onDelete={timeline.deleteTask}
       />
+      {creationChoice !== null && <div className={styles.creationChoice}>
+        <button onClick={() => { openComposer(creationChoice); setCreationChoice(null); }}>＋ Task</button>
+        <button onClick={() => { setReminderStart(creationChoice); setReminderOpen(true); setCreationChoice(null); }}>◇ Reminder</button>
+      </div>}
+      <ReminderComposer open={reminderOpen} initialTime={reminderStart} onClose={() => setReminderOpen(false)} onCreate={timeline.addReminder} />
       <ChronosLog
         open={logOpen}
         entries={timeline.logs}

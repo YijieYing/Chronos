@@ -17,13 +17,16 @@ import type {
   ChronosLogEntry,
   NewTaskInput,
   TimelineTask,
+  Reminder,
 } from "../types";
+import { createReminder, loadReminders } from "../api/reminders";
 
 const minute = 60_000;
 
 export function useTimelineStore() {
   const [tasks, setTasks] = useState<TimelineTask[]>([]);
   const [commands, setCommands] = useState<AgentCommand[]>([]);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
   const [logs, setLogs] = useState<ChronosLogEntry[]>([]);
   const [focusTarget, setFocusTarget] = useState<number | null>(null);
   const [storageStatus, setStorageStatus] =
@@ -33,10 +36,11 @@ export function useTimelineStore() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([loadTimelineTasks(), loadProposals()])
-      .then(([storedTasks, storedProposals]) => {
+    Promise.all([loadTimelineTasks(), loadProposals(), loadReminders()])
+      .then(([storedTasks, storedProposals, storedReminders]) => {
         if (!active) return;
         if (!hasLocalMutation.current) setTasks(storedTasks);
+        setReminders(storedReminders);
         const latestProposal = storedProposals[0];
         setCommands(
           latestProposal &&
@@ -262,6 +266,19 @@ export function useTimelineStore() {
     setFocusTarget(time);
   }
 
+  function addReminder(reminder: Reminder) {
+    setReminders((current) => [...current, reminder]);
+    createReminder(reminder)
+      .then((stored) => {
+        setReminders((current) => current.map((item) => item.id === stored.id ? stored : item));
+        confirmStorage();
+      })
+      .catch((error) => {
+        setReminders((current) => current.filter((item) => item.id !== reminder.id));
+        reportStorageError(error);
+      });
+  }
+
   async function runAgent(request: string) {
     try {
       const proposal = await createProposal(request);
@@ -298,7 +315,11 @@ export function useTimelineStore() {
       await resolveProposal(id, accepted);
       if (accepted) {
         hasLocalMutation.current = true;
-        setTasks(await loadTimelineTasks());
+        const [storedTasks, storedReminders] = await Promise.all([
+          loadTimelineTasks(), loadReminders(),
+        ]);
+        setTasks(storedTasks);
+        setReminders(storedReminders);
       }
       setLogs((current) =>
         current.map((item) =>
@@ -322,7 +343,12 @@ export function useTimelineStore() {
     if (entry.proposalId) {
       try {
         await restoreProposal(entry.proposalId);
-        setTasks(await loadTimelineTasks());
+        const [storedTasks, storedReminders] = await Promise.all([
+          loadTimelineTasks(),
+          loadReminders(),
+        ]);
+        setTasks(storedTasks);
+        setReminders(storedReminders);
         setLogs((current) =>
           current.map((item) =>
             item.id === id ? { ...item, status: "restored" } : item,
@@ -415,12 +441,14 @@ export function useTimelineStore() {
 
   return {
     tasks: sortedTasks,
+    reminders,
     commands,
     logs,
     storageStatus,
     storageError,
     focusTarget,
     addTask,
+    addReminder,
     updateTaskTiming,
     updateTask,
     deleteTask,
@@ -442,17 +470,26 @@ function proposalToCommand(proposal: ScheduleProposal): AgentCommand {
   const change = proposal.changes[0];
   const needsClarification = proposal.status === "needs_clarification";
   const cursorTime = proposal.task?.start ?? Date.now();
+  const reminderLines = proposal.reminderDrafts.map(({ reminder }) => {
+    const time = reminder.trigger.type === "time"
+      ? reminder.trigger.at
+      : (reminder.trigger.start + reminder.trigger.end) / 2;
+    return `◇ ${formatTime(time)} · ${reminder.title} · ${reminder.delivery}`;
+  });
   return {
     id: proposal.id,
     cursorTime,
     title: needsClarification
       ? "Chronos needs clarification"
+      : proposal.reminderDrafts.length
+        ? `${proposal.reminderDrafts.length} REMINDER BEACON${proposal.reminderDrafts.length > 1 ? "S" : ""}`
       : proposal.proposedTasks.length > 1
         ? `${proposal.proposedTasks.length} TASK PLAN`
         : change ? `${change.operation.toUpperCase()} proposal` : "Schedule proposal",
     lines: needsClarification
       ? proposal.clarifications.map((item) => item.question)
       : [
+      ...reminderLines,
       ...(proposal.proposedTasks.length > 1
         ? proposal.proposedTasks.map((task) => {
             const time = new Date(task.preferred_start).getTime();

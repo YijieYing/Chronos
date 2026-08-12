@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from chronos.reminders.models import Reminder, ReminderStatus
+from chronos.reminders.service import ReminderService, reminder_dict
 from chronos.schedule.command_batch import ScheduleCommandBatch, ScheduleCreateCommand
 from chronos.schedule.commands import (
     DeterministicScheduleCommandParser,
@@ -37,10 +40,12 @@ class ProposalService:
         schedule: ScheduleService,
         repository: ProposalRepository,
         parser: ScheduleCommandParser | None = None,
+        reminders: ReminderService | None = None,
     ) -> None:
         self._schedule = schedule
         self._repository = repository
         self._parser = parser or DeterministicScheduleCommandParser()
+        self._reminders = reminders
 
     def create(self, request_text: str, now: datetime | None = None) -> dict[str, object]:
         text = request_text.strip()
@@ -54,6 +59,8 @@ class ProposalService:
             interpretation = interpret(text, local_now, tasks)
             if interpretation.unresolved:
                 return self._create_clarification(text, interpretation)
+            if interpretation.intent == "create_reminder":
+                return self._create_reminder(text, interpretation)
             if interpretation.intent == "create_schedule":
                 return self._create_batch(text, interpretation, local_now.date())
             if interpretation.command is None:
@@ -66,6 +73,11 @@ class ProposalService:
                 return self._create_query(text, command, context_used, parser_mode, parser_warnings)
             return self._create_mutation(
                 text, command, zone, context_used, parser_mode, parser_warnings
+            )
+        if re.search(r"提醒(?:我)?|别忘(?:了)?|remind\s+me|reminder", text, re.I):
+            raise ValueError(
+                "检测到 Reminder 意图，但当前 Agent 未启用语义解析；"
+                "为避免误建成 Task，未创建任何对象"
             )
         parse_with_context = getattr(self._parser, "parse_with_context", None)
         if callable(parse_with_context):
@@ -107,6 +119,70 @@ class ProposalService:
                 {"field": item.field, "question": item.question}
                 for item in interpretation.unresolved
             ],
+            "assumptions": list(interpretation.assumptions),
+            "context_used": [dict(item) for item in interpretation.context_used],
+            "parser_mode": interpretation.mode,
+            "parser_warnings": [],
+        }
+        return self._repository.save(proposal)
+
+    def _create_reminder(self, text, interpretation) -> dict[str, object]:
+        if self._reminders is None:
+            raise RuntimeError("reminder service is not configured")
+        drafts = []
+        for item in interpretation.reminders:
+            reminder = Reminder(
+                reminder_id=str(uuid4()),
+                title=item.title,
+                trigger_type=item.trigger_type,
+                trigger_at=item.trigger_at,
+                window_start=item.window_start,
+                window_end=item.window_end,
+                delivery=item.delivery,
+                priority=item.priority,
+                status=ReminderStatus.PENDING,
+                created_at=datetime.now(UTC),
+                source="agent",
+            )
+            drafts.append(
+                {
+                    "reminder": reminder_dict(reminder),
+                    "provenance": {
+                        "title": item.title_source,
+                        "time": list(item.temporal_sources),
+                        "delivery": list(item.delivery_sources),
+                    },
+                }
+            )
+        proposal = {
+            "proposal_id": str(uuid4()),
+            "status": "pending",
+            "requires_confirmation": True,
+            "request_text": text,
+            "command": {"type": "create_reminder"},
+            "commands": [],
+            "reminder_drafts": drafts,
+            "proposed_task": None,
+            "proposed_tasks": [],
+            "results": [],
+            "draft_plan": None,
+            "draft_plans": [],
+            "base_plan_version": None,
+            "base_plan_versions": {},
+            "changes": [
+                {
+                    "operation": "add_reminder",
+                    "task_id": item["reminder"]["id"],
+                    "summary": f"创建提醒「{item['reminder']['title']}」",
+                }
+                for item in drafts
+            ],
+            "conflicts": [],
+            "explanation": [
+                f"识别为 {len(drafts)} 个 Reminder / Beacon，不占用任务时长。",
+                "确认后写入提醒；context-aware 仅保存投递偏好，自动择机属于下一阶段。",
+            ],
+            "clarifications": [],
             "assumptions": list(interpretation.assumptions),
             "context_used": [dict(item) for item in interpretation.context_used],
             "parser_mode": interpretation.mode,
@@ -372,6 +448,16 @@ class ProposalService:
         if proposal["status"] != "pending":
             raise ValueError("only pending proposals can be accepted")
         self._assert_fresh(proposal)
+        reminder_drafts = proposal.get("reminder_drafts")
+        if isinstance(reminder_drafts, list) and reminder_drafts:
+            if self._reminders is None:
+                raise RuntimeError("reminder service is not configured")
+            for draft in reminder_drafts:
+                if not isinstance(draft, dict) or not isinstance(draft.get("reminder"), dict):
+                    raise ValueError("reminder proposal payload is incomplete")
+                values = _reminder_from_dict(draft["reminder"])
+                self._reminders.create(**values)
+            return self._repository.save({**proposal, "status": "accepted"})
         commands = proposal.get("commands")
         if isinstance(commands, list) and commands:
             task_payloads = [
@@ -429,6 +515,15 @@ class ProposalService:
         proposal = self.get(proposal_id)
         if proposal["status"] != "accepted":
             raise ValueError("only accepted proposals can be restored")
+        reminder_drafts = proposal.get("reminder_drafts")
+        if isinstance(reminder_drafts, list) and reminder_drafts:
+            if self._reminders is None:
+                raise RuntimeError("reminder service is not configured")
+            for draft in reminder_drafts:
+                reminder = draft.get("reminder") if isinstance(draft, dict) else None
+                if isinstance(reminder, dict):
+                    self._reminders.delete(str(reminder["id"]))
+            return self._repository.save({**proposal, "status": "restored"})
         commands = proposal.get("commands")
         if isinstance(commands, list) and commands:
             ids = [str(item["task_id"]) for item in commands if isinstance(item, dict)]
@@ -461,6 +556,8 @@ class ProposalService:
         return self._repository.save({**proposal, "status": "restored"})
 
     def _assert_fresh(self, proposal: dict[str, object]) -> None:
+        if proposal.get("reminder_drafts"):
+            return
         versions = proposal.get("base_plan_versions")
         if isinstance(versions, dict):
             for value, version in versions.items():
@@ -476,6 +573,25 @@ class ProposalService:
             target = datetime.fromtimestamp(int(proposed["start"]) / 1000, zone).date()
             if self._schedule.current_plan_version(target) != proposal.get("base_plan_version"):
                 raise ValueError("proposal is stale; generate a new proposal")
+
+
+def _reminder_from_dict(item: dict[str, object]) -> dict[str, object]:
+    trigger = item["trigger"]
+    assert isinstance(trigger, dict)
+    def parse(value: object) -> datetime | None:
+        return datetime.fromtimestamp(int(value) / 1000, UTC) if value else None
+    return {
+        "reminder_id": str(item["id"]),
+        "title": str(item["title"]),
+        "trigger_type": str(trigger["type"]),
+        "trigger_at": parse(trigger.get("at")),
+        "window_start": parse(trigger.get("start")),
+        "window_end": parse(trigger.get("end")),
+        "delivery": str(item["delivery"]),
+        "priority": int(item["priority"]),
+        "source": str(item["source"]),
+        "created_at": datetime.fromisoformat(str(item["created_at"])),
+    }
 
 
 def _command_dict(command: ScheduleCommand) -> dict[str, object]:

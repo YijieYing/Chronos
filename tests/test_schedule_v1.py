@@ -7,9 +7,12 @@ from zoneinfo import ZoneInfo
 
 from chronos.api.routes.v1 import V1Router
 from chronos.infrastructure.sqlite_proposals import SQLiteProposalRepository
+from chronos.infrastructure.sqlite_reminders import SQLiteReminderRepository
 from chronos.infrastructure.sqlite_schedule import SQLiteScheduleRepository
+from chronos.reminders.service import ReminderService
 from chronos.schedule.agent_interpretation import (
     AgentInterpretation,
+    InterpretedReminder,
     InterpretedTask,
     UnresolvedField,
 )
@@ -95,6 +98,42 @@ class ScheduleV1Test(TestCase):
         self.assertEqual(envelope["schema_version"], 1)
         self.assertIsNone(envelope["error"])
         self.assertEqual(rejected_envelope["data"]["status"], "rejected")
+        self.assertEqual(self.repository.list_tasks(), [])
+
+    def test_v1_router_creates_and_updates_an_independent_reminder(self) -> None:
+        database = Path(self.temporary.name) / "chronos.sqlite3"
+        reminders = ReminderService(SQLiteReminderRepository(database))
+        router = V1Router(self.schedule, self.proposals, reminders=reminders)
+        at = int(datetime(2026, 8, 13, 15, 20, tzinfo=UTC).timestamp() * 1000)
+
+        status, envelope = router.dispatch(
+            "POST",
+            "/api/v1/reminders",
+            {
+                "id": "parcel",
+                "title": "取快递",
+                "trigger": {"type": "time", "at": at},
+                "delivery": "exact",
+                "priority": 3,
+            },
+        )
+        updated_status, updated = router.dispatch(
+            "PUT", "/api/v1/reminders/parcel", {"status": "done"}
+        )
+
+        self.assertEqual(status.value, 201)
+        self.assertEqual(envelope["data"]["trigger"], {"type": "time", "at": at})
+        self.assertEqual(updated_status.value, 200)
+        self.assertEqual(updated["data"]["status"], "done")
+        self.assertEqual(self.repository.list_tasks(), [])
+
+    def test_deterministic_parser_never_degrades_a_reminder_into_a_task(self) -> None:
+        with self.assertRaisesRegex(ValueError, "避免误建成 Task"):
+            self.proposals.create(
+                "16:00提醒我取快递",
+                now=datetime(2026, 8, 13, 9, 0, tzinfo=self.zone),
+            )
+
         self.assertEqual(self.repository.list_tasks(), [])
 
     def test_stale_proposal_cannot_overwrite_a_newer_plan(self) -> None:
@@ -409,6 +448,41 @@ class ScheduleV1Test(TestCase):
         )
 
         self.assertEqual(migrated.get_task(task.task_id).task_type, "execution")
+
+    def test_agent_reminder_waits_for_confirmation_and_can_restore(self) -> None:
+        reminders = ReminderService(
+            SQLiteReminderRepository(Path(self.temporary.name) / "chronos.sqlite3")
+        )
+        interpretation = AgentInterpretation(
+            intent="create_reminder",
+            tasks=(),
+            reminders=(
+                InterpretedReminder(
+                    title="取快递",
+                    title_source="取快递",
+                    trigger_type="time",
+                    trigger_at=datetime(2026, 8, 13, 15, 20, tzinfo=self.zone),
+                    window_start=None,
+                    window_end=None,
+                    temporal_sources=("15:20",),
+                    delivery="exact",
+                ),
+            ),
+        )
+        service = ProposalService(
+            self.schedule,
+            SQLiteProposalRepository(Path(self.temporary.name) / "chronos.sqlite3"),
+            _InterpretationParser(interpretation),
+            reminders,
+        )
+
+        proposal = service.create("15:20提醒我取快递")
+        self.assertEqual(proposal["status"], "pending")
+        self.assertEqual(reminders.list(), [])
+        service.accept(str(proposal["proposal_id"]))
+        self.assertEqual(reminders.list()[0]["title"], "取快递")
+        service.restore(str(proposal["proposal_id"]))
+        self.assertEqual(reminders.list(), [])
 
 
 class _InterpretationParser:

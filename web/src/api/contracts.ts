@@ -59,6 +59,20 @@ export interface ProposalPayload {
   parser_warnings?: string[];
   clarifications?: Array<{ field: string; question: string }>;
   assumptions?: string[];
+  reminder_drafts?: Array<{
+    reminder: {
+      id: string;
+      title: string;
+      trigger:
+        | { type: "time"; at: number }
+        | { type: "window"; start: number; end: number };
+      delivery: "exact" | "context-aware";
+      priority: number;
+      status: "pending" | "delivered" | "done" | "dismissed";
+      source: "user" | "agent";
+      created_at: string;
+    };
+  }>;
   created_at: string;
   updated_at: string;
 }

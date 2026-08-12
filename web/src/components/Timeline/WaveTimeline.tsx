@@ -12,6 +12,7 @@ import type {
   AgentCommand,
   TemporalIntelligence,
   TimelineTask,
+  Reminder,
 } from "../../types";
 import { CurrentStateCapsule } from "./CurrentStateCapsule";
 import { CognitiveLoadTrack } from "./CognitiveLoadTrack";
@@ -19,6 +20,7 @@ import { TaskWave } from "./TaskWave";
 import { TimeCursor } from "./TimeCursor";
 import { TimelineCommand } from "../Agent/TimelineCommand";
 import styles from "./Timeline.module.css";
+import { ReminderBeacon } from "./ReminderBeacon";
 
 const minute = 60_000;
 const basePixelsPerMinute = 1.45;
@@ -28,6 +30,7 @@ const baseline = 294;
 interface WaveTimelineProps {
   now: number;
   tasks: TimelineTask[];
+  reminders: Reminder[];
   intelligence: TemporalIntelligence;
   commands: AgentCommand[];
   focusTarget: number | null;
@@ -39,6 +42,7 @@ interface WaveTimelineProps {
 export function WaveTimeline({
   now,
   tasks,
+  reminders,
   intelligence,
   commands,
   focusTarget,
@@ -232,6 +236,9 @@ export function WaveTimeline({
         />
         <TimeCursor x={nowX} height={height} />
       </svg>
+      {reminders
+        .filter((reminder) => reminder.status === "pending" || reminder.status === "delivered")
+        .map((reminder) => <ReminderBeacon key={reminder.id} reminder={reminder} now={now} xFor={xFor} />)}
       <CurrentStateCapsule
         intelligence={intelligence}
         activeTask={activeTask}

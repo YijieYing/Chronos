@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from http import HTTPStatus
 
 from chronos.api.contracts.common import success
 from chronos.api.contracts.schedule import scheduled_task_values
-from chronos.schedule.proposals import ProposalService
+from chronos.reminders.models import ReminderStatus
+from chronos.reminders.service import ReminderService, reminder_dict
 from chronos.schedule.agent_memory import AgentMemoryService
+from chronos.schedule.proposals import ProposalService
 from chronos.schedule.service import ScheduleService, _plan_dict
-
 
 RouteResult = tuple[HTTPStatus, dict[str, object]]
 
@@ -18,10 +20,12 @@ class V1Router:
         schedule: ScheduleService,
         proposals: ProposalService,
         agent_memory: AgentMemoryService | None = None,
+        reminders: ReminderService | None = None,
     ) -> None:
         self._schedule = schedule
         self._proposals = proposals
         self._agent_memory = agent_memory
+        self._reminders = reminders
 
     def dispatch(
         self,
@@ -32,6 +36,25 @@ class V1Router:
         if not path.startswith("/api/v1/"):
             return None
         payload = payload or {}
+        if self._reminders is not None:
+            if path == "/api/v1/reminders":
+                if method == "GET":
+                    return HTTPStatus.OK, success({"reminders": self._reminders.list()})
+                if method == "POST":
+                    reminder = self._reminders.create(**_reminder_values(payload))
+                    return HTTPStatus.CREATED, success(reminder_dict(reminder))
+            reminder_prefix = "/api/v1/reminders/"
+            if path.startswith(reminder_prefix):
+                reminder_id = path.removeprefix(reminder_prefix)
+                if method == "PUT":
+                    reminder = self._reminders.set_status(
+                        reminder_id, ReminderStatus(str(payload["status"]))
+                    )
+                    return HTTPStatus.OK, success(reminder_dict(reminder))
+                if method == "DELETE":
+                    if not self._reminders.delete(reminder_id):
+                        raise KeyError(reminder_id)
+                    return HTTPStatus.OK, success({"deleted": True, "id": reminder_id})
         if self._agent_memory is not None:
             if method == "GET" and path == "/api/v1/agent/imports":
                 return HTTPStatus.OK, success({"imports": self._agent_memory.list_imports()})
@@ -131,3 +154,23 @@ class V1Router:
                 proposal_id = suffix.removesuffix("/restore")
                 return HTTPStatus.OK, success(self._proposals.restore(proposal_id))
         raise KeyError(path)
+
+
+def _reminder_values(payload: dict[str, object]) -> dict[str, object]:
+    trigger = payload.get("trigger")
+    if not isinstance(trigger, dict):
+        raise ValueError("reminder trigger is required")
+    trigger_type = str(trigger.get("type", ""))
+    def parse(value: object) -> datetime | None:
+        return datetime.fromtimestamp(int(value) / 1000, UTC) if value else None
+    return {
+        "reminder_id": str(payload["id"]),
+        "title": str(payload["title"]),
+        "trigger_type": trigger_type,
+        "trigger_at": parse(trigger.get("at")),
+        "window_start": parse(trigger.get("start")),
+        "window_end": parse(trigger.get("end")),
+        "delivery": str(payload.get("delivery", "exact")),
+        "priority": int(payload.get("priority", 3)),
+        "source": str(payload.get("source", "user")),
+    }

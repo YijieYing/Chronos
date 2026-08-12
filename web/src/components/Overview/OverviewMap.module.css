@@ -179,6 +179,7 @@
 }
 .weekTask:active { cursor: grabbing; }
 .weekTask[data-fixed="true"] { border-width: 1.5px; }
+.weekReminder { position: absolute; z-index: 3; top: 7px; width: 15px; height: 15px; padding: 0; border: 0; background: transparent; color: #3d8a67; font: 12px/1 var(--mono); transform: translateX(-50%); }
 
 .resizeHandle {
   position: absolute;

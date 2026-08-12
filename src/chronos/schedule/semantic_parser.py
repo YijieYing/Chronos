@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 from chronos.schedule.agent_config import AgentConfig, ProviderConfig
 from chronos.schedule.agent_interpretation import (
     AgentInterpretation,
+    InterpretedReminder,
     InterpretedTask,
     UnresolvedField,
 )
@@ -299,7 +300,8 @@ title."""
 
 _INTERPRETATION_PROMPT = """You are the interpretation layer for Chronos Schedule.
 Return only one JSON object. Do not schedule or optimize anything. Extract user intent and preserve
-field provenance. Valid intents are create_schedule, update_task, delete_task, query_schedule.
+field provenance. Valid intents are create_schedule, create_reminder, update_task, delete_task,
+query_schedule. Reminder intent is for “don't forget / remind me” events that do not reserve time.
 
 For create_schedule return:
 {"intent":"create_schedule","tasks":[{"title":"concise name","title_source":"exact source
@@ -320,6 +322,17 @@ of exact request substrings. A phrase such as “每天” may ground every task
 If the request states an end date, recurrence.until is required and the date is inclusive. Exact
 clock times are fixed. Broad windows such as morning are not exact times and must be unresolved
 unless the user supplied a clock time.
+
+For create_reminder return:
+{"intent":"create_reminder","tasks":[],"reminders":[{"title":"concise reminder",
+"title_source":"exact phrase","trigger":{"type":"time","at":"ISO 8601"},
+"temporal_sources":["exact phrase"],"delivery":"exact","delivery_sources":[],
+"priority":3}],"unresolved":[],"assumptions":[]}
+or use trigger {"type":"window","start":"ISO 8601","end":"ISO 8601"}. “下午/晚上”
+without an exact clock is a window, not an unresolved point. Phrases like “空下来以后/合适的时候”
+mean context-aware delivery; otherwise window delivery is exact for first-version midpoint display.
+Reminder titles describe what must not be forgotten, never include “提醒我/记得”. Every source is an
+exact request substring. Do not give reminders duration and do not turn them into tasks.
 
 For update_task, delete_task, or query_schedule, return intent plus a single legacy_command object
 using the existing command schema and an empty tasks array. Never invent task ids."""
@@ -467,6 +480,10 @@ def _interpretation_from_response(
         else ()
     )
     if intent != "create_schedule":
+        if intent == "create_reminder":
+            return _reminder_interpretation(
+                payload, now, request_text, context_used, unresolved, assumptions
+            )
         legacy = payload.get("legacy_command")
         if not isinstance(legacy, dict):
             raise ValueError("non-create interpretation requires legacy_command")
@@ -603,6 +620,103 @@ def _json_object(response: str) -> dict[str, object]:
     return payload
 
 
+def _reminder_interpretation(
+    payload: dict[str, object],
+    now: datetime,
+    request_text: str,
+    context_used: tuple[dict[str, object], ...],
+    unresolved: list[UnresolvedField],
+    assumptions: tuple[str, ...],
+) -> AgentInterpretation:
+    raw = payload.get("reminders", [])
+    if not isinstance(raw, list) or not raw:
+        _add_unresolved(unresolved, "reminders", "请说明需要提醒什么。")
+        return AgentInterpretation(
+            intent="create_reminder",
+            tasks=(),
+            unresolved=tuple(unresolved),
+            assumptions=assumptions,
+            context_used=context_used,
+        )
+    reminders: list[InterpretedReminder] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError("each reminder must be an object")
+        title = str(item.get("title") or "").strip()
+        title_source = _verified_source(
+            item.get("title_source"),
+            request_text,
+            f"reminders[{index}].title",
+            unresolved,
+        )
+        trigger = item.get("trigger")
+        if not isinstance(trigger, dict):
+            _add_unresolved(
+                unresolved, f"reminders[{index}].trigger", "请明确提醒时间。"
+            )
+            continue
+        trigger_type = str(trigger.get("type", ""))
+        temporal_sources = _verified_sources(
+            item.get("temporal_sources"),
+            request_text,
+            f"reminders[{index}].trigger",
+            unresolved,
+        )
+        trigger_at = _optional_datetime(trigger.get("at"), now)
+        window_start = _optional_datetime(trigger.get("start"), now)
+        window_end = _optional_datetime(trigger.get("end"), now)
+        if trigger_type == "time" and trigger_at is None:
+            _add_unresolved(
+                unresolved, f"reminders[{index}].trigger.at", "请明确提醒时刻。"
+            )
+        if trigger_type == "window" and (window_start is None or window_end is None):
+            _add_unresolved(
+                unresolved, f"reminders[{index}].trigger.window", "请明确提醒时间范围。"
+            )
+        if trigger_type not in {"time", "window"}:
+            _add_unresolved(
+                unresolved, f"reminders[{index}].trigger.type", "提醒是时刻还是时间窗口？"
+            )
+            continue
+        delivery = str(item.get("delivery", "exact"))
+        if delivery not in {"exact", "context-aware"}:
+            delivery = "exact"
+        context_source = _context_aware_source(request_text)
+        if context_source:
+            delivery = "context-aware"
+        delivery_sources = _verified_sources(
+            item.get("delivery_sources"),
+            request_text,
+            f"reminders[{index}].delivery",
+            unresolved,
+            required=delivery == "context-aware",
+        )
+        if context_source and not delivery_sources:
+            delivery_sources = (context_source,)
+        reminders.append(
+            InterpretedReminder(
+                title=title,
+                title_source=title_source or "",
+                trigger_type=trigger_type,  # type: ignore[arg-type]
+                trigger_at=trigger_at,
+                window_start=window_start,
+                window_end=window_end,
+                temporal_sources=temporal_sources,
+                delivery=delivery,  # type: ignore[arg-type]
+                delivery_sources=delivery_sources,
+                priority=max(1, min(5, int(item.get("priority", 3)))),
+            )
+        )
+    return AgentInterpretation(
+        intent="create_reminder",
+        tasks=(),
+        reminders=tuple(reminders),
+        unresolved=tuple(unresolved),
+        assumptions=assumptions,
+        context_used=context_used,
+    )
+
+
 def _verified_source(
     value: object,
     request_text: str,
@@ -620,6 +734,24 @@ def _verified_source(
         _add_unresolved(unresolved, field, f"请明确 {field}；Agent 返回的依据不在原文中。")
         return None
     return source
+
+
+def _verified_sources(
+    value: object,
+    request_text: str,
+    field: str,
+    unresolved: list[UnresolvedField],
+    *,
+    required: bool = True,
+) -> tuple[str, ...]:
+    values = value if isinstance(value, list) else ([] if value is None else [value])
+    sources = tuple(str(item).strip() for item in values if str(item).strip())
+    if required and not sources:
+        _add_unresolved(unresolved, field, f"请明确 {field}。")
+    if any(source not in request_text for source in sources):
+        _add_unresolved(unresolved, field, f"{field} 的依据不在原文中。")
+        return ()
+    return sources
 
 
 def _verified_recurrence_sources(
@@ -738,3 +870,13 @@ def _requests_until(value: str) -> bool:
             re.I,
         )
     )
+
+
+def _context_aware_source(value: str) -> str | None:
+    match = re.search(
+        r"空下来以后|有空(?:时|的时候)?|合适的时候|方便的时候|任务结束后|"
+        r"(?:when|once)\s+(?:i(?:'m| am)\s+)?(?:free|available)",
+        value,
+        re.I,
+    )
+    return match.group(0) if match else None

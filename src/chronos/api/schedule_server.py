@@ -19,11 +19,13 @@ from chronos.api.routes.v1 import V1Router
 from chronos.infrastructure.sqlite_agent_memory import SQLiteAgentMemoryRepository
 from chronos.infrastructure.sqlite_cognitive_state import SQLiteCognitiveStateRepository
 from chronos.infrastructure.sqlite_proposals import SQLiteProposalRepository
+from chronos.infrastructure.sqlite_reminders import SQLiteReminderRepository
 from chronos.infrastructure.sqlite_schedule import SQLiteScheduleRepository
 from chronos.infrastructure.sqlite_timeline import SQLiteTimelineRepository
 from chronos.monitor.cognitive import cognitive_point_dict
 from chronos.monitor.serialization import observation_from_json
 from chronos.monitor.service import MonitorService
+from chronos.reminders.service import ReminderService
 from chronos.schedule.agent_config import load_agent_config
 from chronos.schedule.agent_memory import MAX_ARCHIVE_BYTES, AgentMemoryService
 from chronos.schedule.models import TaskStatus
@@ -350,6 +352,7 @@ def main() -> int:
     timeline_repository = SQLiteTimelineRepository(args.database)
     service.import_legacy_timeline_tasks(timeline_repository.list_tasks())
     proposal_repository = SQLiteProposalRepository(args.database)
+    reminder_service = ReminderService(SQLiteReminderRepository(args.database))
     memory_repository = SQLiteAgentMemoryRepository(args.database)
     memory_service = AgentMemoryService(memory_repository, args.agent_import_dir)
     agent_config = load_agent_config(args.agent_config)
@@ -361,8 +364,10 @@ def main() -> int:
         and selected_provider.base_url
     )
     command_parser = build_command_parser(agent_config, memory_service.retrieve_context)
-    proposal_service = ProposalService(service, proposal_repository, command_parser)
-    v1_router = V1Router(service, proposal_service, memory_service)
+    proposal_service = ProposalService(
+        service, proposal_repository, command_parser, reminder_service
+    )
+    v1_router = V1Router(service, proposal_service, memory_service, reminder_service)
     root = Path(__file__).resolve().parents[3] / "web" / "dist"
     if not root.is_dir():
         raise SystemExit("Frontend build not found. Run: npm --prefix web run build")

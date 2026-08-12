@@ -126,6 +126,17 @@
 .timelineCommand button:first-child { color: white; background: #315c47; border-color: #315c47; }
 .timelineCommand small { display: block; margin-top: 9px; color: #819087; font-size: 8px; }
 .commandCursor { color: var(--signal); font-size: 12px; animation: cursor-blink 1.15s steps(1) infinite; }
+.reminderLayer { position: absolute; z-index: 7; inset: 0; pointer-events: none; }
+.reminderWindow { position: absolute; top: 282px; height: 17px; border: solid rgba(70,132,104,.28); border-width: 0 1px 1px; border-radius: 0 0 8px 8px; background: linear-gradient(90deg, transparent, rgba(74,145,111,.06), transparent); }
+.reminderBeacon { position: absolute; top: 286px; width: 18px; height: 18px; padding: 0; border: 0; background: transparent; transform: translate(-50%,-50%); pointer-events: auto; }
+.reminderBeacon > i { display: block; width: 9px; height: 9px; margin: auto; border: 1px solid #4f8b70; background: rgba(248,252,249,.95); transform: rotate(45deg); transition: .35s ease; }
+.reminderBeacon[data-state="far"] { opacity: .38; }
+.reminderBeacon[data-state="near"] > i { border-color: #2e936b; box-shadow: 0 0 0 6px rgba(59,155,113,.08); animation: beacon-breathe 3.8s ease-in-out infinite; }
+.reminderBeacon[data-state="due"] > i { background: #2f9b70; box-shadow: 0 0 0 7px rgba(47,155,112,.14); }
+.reminderBeacon > span { position: absolute; top: 22px; left: 50%; display: grid; gap: 4px; width: max-content; max-width: 240px; padding: 8px 10px; border: 1px solid #d7e3dc; border-radius: 8px; background: rgba(249,252,249,.97); box-shadow: 0 12px 35px rgba(38,60,49,.14); color: #375448; text-align: left; transform: translateX(-50%); }
+.reminderBeacon b { font: 700 10px/1.3 var(--mono); }
+.reminderBeacon small { color: #829089; font: 600 8px/1 var(--mono); }
+@keyframes beacon-breathe { 50% { opacity: .62; box-shadow: 0 0 0 10px rgba(59,155,113,.035); } }
 
 .clarificationBackdrop {
   position: fixed;

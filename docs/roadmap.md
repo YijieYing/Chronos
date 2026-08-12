@@ -5,6 +5,30 @@ not part of the current implementation. Each item should state its current limit
 outcome, and delivery checkpoints. Completed work should move to release notes or architecture
 documentation instead of remaining here.
 
+## Context-aware Reminder delivery and object conversion
+
+### Current limitation
+
+Reminder / Beacon supports point and window triggers, exact/context-aware delivery intent, timeline
+and Overview markers, and Agent proposals. The first version does not yet use Monitor signals to
+select an actual delivery instant inside a window. It also does not aggregate dense reminders or
+convert between Task and Reminder.
+
+### Intended outcome
+
+- Select a natural interruption point from task completion, focus decline, recovery state, low
+  cognitive load, and absence of fixed work.
+- Add an explicit interruptibility threshold and an auditable reason for the selected delivery time.
+- Aggregate dense Overview beacons without turning them into calendar blocks.
+- Convert Reminder ↔ Task while preserving title, temporal information, and Chronos Log history.
+
+### Delivery checkpoints
+
+1. Add Monitor-driven reminder evaluator and idempotent delivered events.
+2. Add interruptibility policy, cooldowns, delivery explanation, and notification adapter.
+3. Add Overview aggregation and reminder status controls.
+4. Add reversible Task / Reminder conversion commands and UI.
+
 ## Background monitoring independent of the UI
 
 ### Current lifecycle

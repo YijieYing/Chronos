@@ -189,6 +189,11 @@ POST   /api/v1/proposals
 POST   /api/v1/proposals/<id>/accept
 POST   /api/v1/proposals/<id>/reject
 POST   /api/v1/proposals/<id>/restore
+
+GET    /api/v1/reminders
+POST   /api/v1/reminders
+PUT    /api/v1/reminders/<id>
+DELETE /api/v1/reminders/<id>
 ```
 
 V1 responses use a stable envelope with `schema_version`, `request_id`, `data`, and `error`.
@@ -203,6 +208,13 @@ Accepting or restoring a batch updates all task series and plans in one SQLite t
 changes before acceptance. The timeline receives planner-generated recurring occurrences from the
 backend rather than expanding recurrence in the browser. Legacy move/resize, delete, and query
 commands remain available through the same replaceable parser boundary.
+
+Reminder / Beacon is a separate temporal object for “do not forget” intent. Point reminders render
+as single beacons; window reminders render as a subtle range bracket with a beacon and do not consume
+Schedule time. Agent reminder creation remains confirm-before-write. Context-aware delivery is stored
+as an explicit intent in this version; Monitor-selected interruption timing remains roadmap work.
+Agent reminder recognition uses the configured semantic provider; the deterministic fallback refuses
+Reminder-shaped text rather than silently degrading it into a Task.
 
 Agent providers are selected through `config/agent.local.toml` (ignored by Git). The checked-in
 `config/agent.example.toml` contains presets for DeepSeek, OpenAI/OpenAI-compatible APIs, Anthropic,

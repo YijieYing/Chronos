@@ -6,13 +6,14 @@ import {
   useState,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import type { ChronosLogEntry, TimelineTask } from "../../types";
+import type { ChronosLogEntry, Reminder, TimelineTask } from "../../types";
 import { spectrumColor } from "../Timeline/waveMath";
 import styles from "./OverviewMap.module.css";
 
 interface OverviewMapProps {
   open: boolean;
   tasks: TimelineTask[];
+  reminders: Reminder[];
   logs: ChronosLogEntry[];
   onClose: () => void;
   onOpenLog: () => void;
@@ -27,6 +28,7 @@ const dayDuration = 24 * 60 * minute;
 export function OverviewMap({
   open,
   tasks,
+  reminders,
   logs,
   onClose,
   onOpenLog,
@@ -76,12 +78,20 @@ export function OverviewMap({
               const dayTasks = tasks
                 .filter((task) => task.start >= day.start && task.start < day.end)
                 .sort((left, right) => left.start - right.start);
+              const dayReminders = reminders.filter((reminder) => {
+                if (reminder.status === "done" || reminder.status === "dismissed") return false;
+                const time = reminder.trigger.type === "time"
+                  ? reminder.trigger.at
+                  : (reminder.trigger.start + reminder.trigger.end) / 2;
+                return time >= day.start && time < day.end;
+              });
               return (
                 <DayRegion
                   key={day.start}
                   start={day.start}
                   end={day.end}
                   tasks={dayTasks}
+                  reminders={dayReminders}
                   today={isSameDay(day.start, Date.now())}
                   onSelectTask={selectTask}
                   onCreateAt={createAt}
@@ -107,6 +117,7 @@ interface DayRegionProps {
   start: number;
   end: number;
   tasks: TimelineTask[];
+  reminders: Reminder[];
   today: boolean;
   onSelectTask: (time: number) => void;
   onCreateAt: (time: number) => void;
@@ -117,6 +128,7 @@ function DayRegion({
   start,
   end,
   tasks,
+  reminders,
   today,
   onSelectTask,
   onCreateAt,
@@ -172,6 +184,12 @@ function DayRegion({
             onUpdate={onUpdateTask}
           />
         ))}
+        {reminders.map((reminder) => {
+          const time = reminder.trigger.type === "time"
+            ? reminder.trigger.at
+            : (reminder.trigger.start + reminder.trigger.end) / 2;
+          return <button key={reminder.id} className={styles.weekReminder} title={reminder.title} style={{ left: `${((time - start) / dayDuration) * 100}%` }} onClick={(event) => { event.stopPropagation(); onSelectTask(time); }}>◇</button>;
+        })}
       </div>
 
       <div className={styles.taskIndex}>

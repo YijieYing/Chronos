@@ -29,6 +29,19 @@ export interface TimelineTask {
   unscheduledReason?: string;
 }
 
+export interface Reminder {
+  id: string;
+  title: string;
+  trigger:
+    | { type: "time"; at: number }
+    | { type: "window"; start: number; end: number };
+  delivery: "exact" | "context-aware";
+  priority: number;
+  status: "pending" | "delivered" | "done" | "dismissed";
+  source: "user" | "agent";
+  createdAt: number;
+}
+
 export interface MonitorSample {
   time: number;
   state: "working" | "not_working";

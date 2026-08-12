@@ -242,6 +242,26 @@ model = "deepseek-v4-flash"
 
         self.assertEqual(result.tasks[0].preferred_start.isoformat(), "2026-08-12T07:30:00+08:00")
 
+    def test_context_aware_language_overrides_exact_reminder_delivery(self) -> None:
+        response = (
+            '{"intent":"create_reminder","tasks":[],"reminders":[{'
+            '"title":"给老师发邮件","title_source":"给老师发邮件",'
+            '"trigger":{"type":"window","start":"2026-08-13T12:00:00+08:00",'
+            '"end":"2026-08-13T18:00:00+08:00"},'
+            '"temporal_sources":["下午"],"delivery":"exact",'
+            '"delivery_sources":[],"priority":3}],"unresolved":[],"assumptions":[]}'
+        )
+        parser = SemanticScheduleCommandParser(_FakeProvider(response))
+
+        result = parser.interpret(
+            "下午我空下来以后提醒我给老师发邮件",
+            datetime(2026, 8, 13, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            [],
+        )
+
+        self.assertEqual(result.reminders[0].delivery, "context-aware")
+        self.assertEqual(result.reminders[0].delivery_sources, ("空下来以后",))
+
     def test_profile_is_read_only_when_fingerprint_changes(self) -> None:
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "agent.md"
