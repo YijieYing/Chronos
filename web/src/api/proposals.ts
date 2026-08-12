@@ -15,6 +15,9 @@ export interface ScheduleProposal {
   contextUsed: NonNullable<ProposalPayload["context_used"]>;
   parserMode: NonNullable<ProposalPayload["parser_mode"]>;
   parserWarnings: string[];
+  proposedTasks: NonNullable<ProposalPayload["proposed_tasks"]>;
+  clarifications: NonNullable<ProposalPayload["clarifications"]>;
+  assumptions: string[];
 }
 
 export async function createProposal(text: string): Promise<ScheduleProposal> {
@@ -67,6 +70,9 @@ function fromProposal(payload: ProposalPayload): ScheduleProposal {
     contextUsed: payload.context_used ?? [],
     parserMode: payload.parser_mode ?? "deterministic",
     parserWarnings: payload.parser_warnings ?? [],
+    proposedTasks: payload.proposed_tasks ?? [],
+    clarifications: payload.clarifications ?? [],
+    assumptions: payload.assumptions ?? [],
   };
 }
 
@@ -83,6 +89,8 @@ function fromTimelinePayload(payload: TimelineTaskPayload): TimelineTask {
     type: payload.task_type,
     source: payload.source,
     recurrence: payload.recurrence ?? undefined,
+    seriesId: payload.series_id ?? undefined,
+    seriesStart: payload.series_start ?? undefined,
     scheduled: payload.scheduled,
     unscheduledReason: payload.unscheduled_reason ?? undefined,
   };

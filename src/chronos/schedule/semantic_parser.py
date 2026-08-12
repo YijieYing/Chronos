@@ -5,15 +5,20 @@ from __future__ import annotations
 import json
 import re
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
-from collections.abc import Callable
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from chronos.schedule.agent_config import AgentConfig, ProviderConfig
+from chronos.schedule.agent_interpretation import (
+    AgentInterpretation,
+    InterpretedTask,
+    UnresolvedField,
+)
 from chronos.schedule.agent_profile import AgentProfileCache
 from chronos.schedule.commands import (
     DeterministicScheduleCommandParser,
@@ -21,7 +26,6 @@ from chronos.schedule.commands import (
     ScheduleCommandParser,
 )
 from chronos.schedule.models import Task
-
 
 TASK_TYPES = {
     "creative",
@@ -72,9 +76,7 @@ class SemanticScheduleCommandParser:
         try:
             profile = self._profile_cache.get().content
             context_used = tuple(self._memory_retriever(text))
-            memory = "\n".join(
-                f"- [{item['category']}] {item['content']}" for item in context_used
-            )
+            memory = "\n".join(f"- [{item['category']}] {item['content']}" for item in context_used)
             response = self._provider.generate(
                 _system_prompt(profile, memory), _prompt(text, now, tasks)
             )
@@ -96,6 +98,33 @@ class SemanticScheduleCommandParser:
                 warnings=("语义模型解析失败，本提案由本地规则生成；请重点核对标题、时间和周期。",),
             )
 
+    def interpret(self, text: str, now: datetime, tasks: list[Task]) -> AgentInterpretation:
+        profile = self._profile_cache.get().content
+        context_used = tuple(self._memory_retriever(text))
+        memory = "\n".join(f"- [{item['category']}] {item['content']}" for item in context_used)
+        system = _interpretation_system_prompt(profile, memory)
+        response = self._provider.generate(system, _prompt(text, now, tasks))
+        first = _interpretation_from_response(response, now, tasks, text, context_used)
+        if not first.unresolved:
+            return first
+        repair_prompt = json.dumps(
+            {
+                "now": now.isoformat(),
+                "request": text,
+                "tasks": _task_context(tasks),
+                "validation_errors": [
+                    {"field": item.field, "error": item.question} for item in first.unresolved
+                ],
+                "instruction": (
+                    "Regenerate the complete interpretation JSON. Fix validation errors by "
+                    "copying every *_source character-for-character from request. Do not invent."
+                ),
+            },
+            ensure_ascii=False,
+        )
+        repaired = self._provider.generate(system, repair_prompt)
+        return _interpretation_from_response(repaired, now, tasks, text, context_used)
+
 
 def build_command_parser(
     config: AgentConfig,
@@ -109,9 +138,7 @@ def build_command_parser(
     if not selected.api_key or not selected.model or not selected.base_url:
         if config.fallback_on_error and config.fallback_provider == "deterministic":
             return DeterministicScheduleCommandParser()
-        raise ValueError(
-            f"Agent provider {selected.name} requires base_url, api_key, and model"
-        )
+        raise ValueError(f"Agent provider {selected.name} requires base_url, api_key, and model")
     provider = _provider(selected, config.timeout_seconds)
     fallback = (
         DeterministicScheduleCommandParser()
@@ -146,13 +173,21 @@ class _OpenAICompatibleProvider:
         }
         if self._config.json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if self._config.name == "deepseek":
+            # Structured extraction does not benefit from spending the output budget on CoT.
+            payload["thinking"] = {"type": "disabled"}
         response = _post_json(
             _join_url(self._config.base_url, self._config.endpoint),
             payload,
             {"Authorization": f"Bearer {self._config.api_key}"},
             self._timeout,
         )
-        return str(response["choices"][0]["message"]["content"])
+        choice = response["choices"][0]
+        content = str(choice["message"].get("content") or "")
+        if not content.strip():
+            reason = choice.get("finish_reason")
+            raise RuntimeError(f"provider returned empty content (finish_reason={reason})")
+        return content
 
 
 class _AnthropicProvider:
@@ -177,7 +212,11 @@ class _AnthropicProvider:
             self._timeout,
         )
         blocks = response.get("content", [])
-        return "".join(str(block.get("text", "")) for block in blocks if block.get("type") == "text")
+        return "".join(
+            str(block.get("text", ""))
+            for block in blocks
+            if block.get("type") == "text"
+        )
 
 
 class _GeminiProvider:
@@ -257,6 +296,29 @@ meeting, recovery. If the request contains multiple distinct tasks, do not merge
 title."""
 
 
+_INTERPRETATION_PROMPT = """You are the interpretation layer for Chronos Schedule.
+Return only one JSON object. Do not schedule or optimize anything. Extract user intent and preserve
+field provenance. Valid intents are create_schedule, update_task, delete_task, query_schedule.
+
+For create_schedule return:
+{"intent":"create_schedule","tasks":[{"title":"concise name","title_source":"exact source
+phrase","duration_minutes":30,"duration_source":"exact source phrase","preferred_start":"ISO
+8601","temporal_source":"exact source phrase","task_type":"execution","recurrence":{"frequency":
+"daily"},"recurrence_source":"exact source phrase","fixed":true}],"unresolved":[],"assumptions":[]}
+
+One user request may produce multiple tasks. Morning and evening occurrences described as separate
+activities must be separate tasks. Never copy the entire request into a title. Never invent a time,
+duration, weekday, recurrence, or task name. If a required field is absent or ambiguous, use null
+and add {"field":"tasks[0].duration_minutes","question":"..."} to unresolved. Source strings must
+be verbatim substrings of the request; personal context can guide task_type but cannot supply a
+missing explicit time or duration. Every *_source must be copied character-for-character as a
+contiguous substring of request, never paraphrased. Exact clock times are fixed. Broad windows such
+as morning are not exact times and must be unresolved unless the user supplied a clock time.
+
+For update_task, delete_task, or query_schedule, return intent plus a single legacy_command object
+using the existing command schema and an empty tasks array. Never invent task ids."""
+
+
 def _system_prompt(profile: str, memory: str = "") -> str:
     if not profile and not memory:
         return _SYSTEM_PROMPT
@@ -276,8 +338,29 @@ def _system_prompt(profile: str, memory: str = "") -> str:
     )
 
 
+def _interpretation_system_prompt(profile: str, memory: str = "") -> str:
+    if not profile and not memory:
+        return _INTERPRETATION_PROMPT
+    context_parts = [part for part in (profile, memory) if part]
+    joined_context = "\n\n".join(context_parts)
+    return (
+        f"{_INTERPRETATION_PROMPT}\n\n"
+        "Context is advisory only and cannot be used as provenance for missing task fields.\n"
+        "<chronos_personal_context>\n"
+        f"{joined_context}\n"
+        "</chronos_personal_context>"
+    )
+
+
 def _prompt(text: str, now: datetime, tasks: list[Task]) -> str:
-    task_context = [
+    return json.dumps(
+        {"now": now.isoformat(), "request": text, "tasks": _task_context(tasks)},
+        ensure_ascii=False,
+    )
+
+
+def _task_context(tasks: list[Task]) -> list[dict[str, object]]:
+    return [
         {
             "task_id": task.task_id,
             "title": task.title,
@@ -287,10 +370,6 @@ def _prompt(text: str, now: datetime, tasks: list[Task]) -> str:
         }
         for task in tasks
     ]
-    return json.dumps(
-        {"now": now.isoformat(), "request": text, "tasks": task_context},
-        ensure_ascii=False,
-    )
 
 
 def _command_from_response(
@@ -346,7 +425,9 @@ def _command_from_response(
             recurrence=_optional_recurrence(payload.get("recurrence")),
             fixed=bool(payload.get("fixed", False)) or _has_exact_clock(request_text),
         )
-    query_date = date.fromisoformat(str(payload["query_date"])) if payload.get("query_date") else None
+    query_date = (
+        date.fromisoformat(str(payload["query_date"])) if payload.get("query_date") else None
+    )
     return ScheduleCommand(
         type=command_type,  # type: ignore[arg-type]
         task_id=task_id,
@@ -354,6 +435,174 @@ def _command_from_response(
         estimated_minutes=estimated,
         query_date=query_date,
     )
+
+
+def _interpretation_from_response(
+    response: str,
+    now: datetime,
+    tasks: list[Task],
+    request_text: str,
+    context_used: tuple[dict[str, object], ...],
+) -> AgentInterpretation:
+    payload = _json_object(response)
+    intent = str(payload.get("intent", ""))
+    unresolved_payload = payload.get("unresolved", [])
+    if not isinstance(unresolved_payload, list):
+        raise ValueError("unresolved must be a list")
+    unresolved = [
+        UnresolvedField(str(item.get("field", "")), str(item.get("question", "")))
+        for item in unresolved_payload
+        if isinstance(item, dict) and item.get("field") and item.get("question")
+    ]
+    assumptions_payload = payload.get("assumptions", [])
+    assumptions = (
+        tuple(str(item) for item in assumptions_payload if str(item).strip())
+        if isinstance(assumptions_payload, list)
+        else ()
+    )
+    if intent != "create_schedule":
+        legacy = payload.get("legacy_command")
+        if not isinstance(legacy, dict):
+            raise ValueError("non-create interpretation requires legacy_command")
+        command = _command_from_response(
+            json.dumps(legacy, ensure_ascii=False), now, tasks, request_text
+        )
+        return AgentInterpretation(
+            intent="single_command",
+            tasks=(),
+            unresolved=tuple(unresolved),
+            assumptions=assumptions,
+            context_used=context_used,
+            command=command,
+        )
+    raw_tasks = payload.get("tasks", [])
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        if not unresolved:
+            unresolved.append(UnresolvedField("tasks", "请说明希望 Chronos 安排的任务。"))
+        return AgentInterpretation(
+            intent="create_schedule",
+            tasks=(),
+            unresolved=tuple(unresolved),
+            assumptions=assumptions,
+            context_used=context_used,
+        )
+    interpreted: list[InterpretedTask] = []
+    for index, item in enumerate(raw_tasks):
+        if not isinstance(item, dict):
+            raise ValueError("each interpreted task must be an object")
+        title = str(item.get("title") or "").strip()
+        title_source = _verified_source(
+            item.get("title_source"), request_text, f"tasks[{index}].title", unresolved
+        )
+        duration_source = _verified_source(
+            item.get("duration_source"),
+            request_text,
+            f"tasks[{index}].duration_minutes",
+            unresolved,
+            required=False,
+        )
+        temporal_source = _verified_source(
+            item.get("temporal_source"),
+            request_text,
+            f"tasks[{index}].preferred_start",
+            unresolved,
+            required=False,
+        )
+        recurrence_source = _verified_source(
+            item.get("recurrence_source"),
+            request_text,
+            f"tasks[{index}].recurrence",
+            unresolved,
+            required=False,
+        )
+        duration = _optional_positive_int(item.get("duration_minutes"))
+        preferred_start = _optional_datetime(item.get("preferred_start"), now)
+        recurrence = _optional_recurrence(item.get("recurrence"))
+        if not title or not title_source:
+            _add_unresolved(unresolved, f"tasks[{index}].title", "这个任务叫什么？")
+        if duration is None or not duration_source:
+            _add_unresolved(
+                unresolved,
+                f"tasks[{index}].duration_minutes",
+                f"「{title or '该任务'}」每次需要多久？",
+            )
+        if preferred_start is None or not temporal_source:
+            _add_unresolved(
+                unresolved,
+                f"tasks[{index}].preferred_start",
+                f"「{title or '该任务'}」应在几点开始？",
+            )
+        if recurrence is not None and not recurrence_source:
+            _add_unresolved(
+                unresolved,
+                f"tasks[{index}].recurrence",
+                f"「{title or '该任务'}」的重复规则是什么？",
+            )
+        if recurrence is None and _requests_recurrence(request_text):
+            _add_unresolved(
+                unresolved,
+                f"tasks[{index}].recurrence",
+                f"请确认「{title or '该任务'}」的重复规则。",
+            )
+        task_type = str(item.get("task_type") or "execution")
+        if task_type not in TASK_TYPES:
+            task_type = "execution"
+        interpreted.append(
+            InterpretedTask(
+                title=title,
+                title_source=title_source or "",
+                duration_minutes=duration,
+                duration_source=duration_source,
+                preferred_start=preferred_start,
+                temporal_source=temporal_source,
+                task_type=task_type,
+                recurrence=recurrence,
+                recurrence_source=recurrence_source,
+                fixed=bool(item.get("fixed", False)) and bool(temporal_source),
+            )
+        )
+    return AgentInterpretation(
+        intent="create_schedule",
+        tasks=tuple(interpreted),
+        unresolved=tuple(unresolved),
+        assumptions=assumptions,
+        context_used=context_used,
+    )
+
+
+def _json_object(response: str) -> dict[str, object]:
+    cleaned = response.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.I | re.S)
+    if fenced:
+        cleaned = fenced.group(1)
+    payload = json.loads(cleaned)
+    if not isinstance(payload, dict):
+        raise ValueError("semantic response must be a JSON object")
+    return payload
+
+
+def _verified_source(
+    value: object,
+    request_text: str,
+    field: str,
+    unresolved: list[UnresolvedField],
+    *,
+    required: bool = True,
+) -> str | None:
+    source = str(value or "").strip()
+    if not source:
+        if required:
+            _add_unresolved(unresolved, field, f"请明确 {field}。")
+        return None
+    if source not in request_text:
+        _add_unresolved(unresolved, field, f"请明确 {field}；Agent 返回的依据不在原文中。")
+        return None
+    return source
+
+
+def _add_unresolved(unresolved: list[UnresolvedField], field: str, question: str) -> None:
+    if not any(item.field == field for item in unresolved):
+        unresolved.append(UnresolvedField(field, question))
 
 
 def _optional_datetime(value: object, now: datetime) -> datetime | None:
@@ -394,3 +643,13 @@ def _normalized_title(value: str) -> str:
 
 def _has_exact_clock(value: str) -> bool:
     return bool(re.search(r"(?:^|\D)(?:[01]?\d|2[0-3])[:：][0-5]\d", value))
+
+
+def _requests_recurrence(value: str) -> bool:
+    return bool(
+        re.search(
+            r"每天|每日|每晚|每早|每周|daily|every\s+day|weekly|every\s+week",
+            value,
+            re.I,
+        )
+    )

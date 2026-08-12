@@ -51,9 +51,7 @@ class DailyPlanner:
             )
             for block in fixed_task_blocks
         ]
-        free_windows = calculate_free_windows(
-            availability, [*fixed_blocks, *task_constraints]
-        )
+        free_windows = calculate_free_windows(availability, [*fixed_blocks, *task_constraints])
         blocks: list[ScheduleBlock] = list(fixed_task_blocks)
         unscheduled: list[UnscheduledTask] = []
 
@@ -182,6 +180,11 @@ def _occurrence_for_date(task: Task, target_date: date) -> Task | None:
     return replace(task, preferred_start=occurrence)
 
 
+def task_occurrence(task: Task, target_date: date) -> Task | None:
+    """Public projection helper shared by planner-backed timeline views."""
+    return _occurrence_for_date(task, target_date)
+
+
 def _python_weekday(javascript_weekday: int) -> int:
     return (javascript_weekday - 1) % 7
 
@@ -198,4 +201,4 @@ def _consume_window(
         remaining.append((start_at, used_start))
     if used_end < end_at:
         remaining.append((used_end, end_at))
-    windows[index:index + 1] = remaining
+    windows[index : index + 1] = remaining

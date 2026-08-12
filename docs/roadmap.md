@@ -5,29 +5,6 @@ not part of the current implementation. Each item should state its current limit
 outcome, and delivery checkpoints. Completed work should move to release notes or architecture
 documentation instead of remaining here.
 
-## Multi-task and week-horizon Agent planning
-
-### Current limitation
-
-Agent commands now carry daily/weekly recurrence and exact clock times are fixed instead of silently
-shifted. The safe interface still accepts exactly one task per proposal. A recurring series is
-stored once and expanded for display, while the Schedule planner validates the base occurrence; it
-does not yet create one atomic, conflict-checked proposal for an entire multi-task day or week plan.
-
-### Intended outcome
-
-- Parse a plan into an explicit command batch without using the full prompt as any task title.
-- Preview all affected dates and recurring occurrences over a visible horizon.
-- Distinguish fixed times, preferred windows, deadlines, and “find a suitable time” intent.
-- Accept or reject the batch atomically, with per-occurrence conflicts and explanations.
-
-### Delivery checkpoints
-
-1. Add versioned `ScheduleCommandBatch` and clarification/error contracts.
-2. Add day/week preview APIs with base plan versions for every affected date.
-3. Project recurring occurrences on the backend and validate a configurable future horizon.
-4. Add batch proposal review with per-task edits before acceptance.
-
 ## Background monitoring independent of the UI
 
 ### Current lifecycle

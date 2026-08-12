@@ -24,6 +24,16 @@ class _FakeProvider:
         return self.response
 
 
+class _SequenceProvider:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = iter(responses)
+        self.prompts: list[str] = []
+
+    def generate(self, system: str, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return next(self.responses)
+
+
 class AgentConfigTest(TestCase):
     def test_loads_selected_provider_from_toml(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -72,9 +82,9 @@ model = "deepseek-v4-flash"
 
     def test_semantic_json_becomes_a_typed_schedule_command(self) -> None:
         provider = _FakeProvider(
-                '{"type":"create_task","title":"写方案",'
-                '"preferred_start":"2026-08-04T14:00:00+08:00",'
-                '"estimated_minutes":60,"task_type":"creative"}'
+            '{"type":"create_task","title":"写方案",'
+            '"preferred_start":"2026-08-04T14:00:00+08:00",'
+            '"estimated_minutes":60,"task_type":"creative"}'
         )
         with TemporaryDirectory() as temporary:
             profile = Path(temporary) / "agent.md"
@@ -100,17 +110,17 @@ model = "deepseek-v4-flash"
             '"preferred_start":"2026-08-04T14:00:00+08:00",'
             '"estimated_minutes":60,"task_type":"creative"}'
         )
-        selected = [{
-            "context_id": "memory-1",
-            "source": "chatgpt",
-            "category": "scheduling",
-            "content": "用户偏好上午进行深度工作",
-            "source_ref": "profile.md",
-            "score": 0.72,
-        }]
-        parser = SemanticScheduleCommandParser(
-            provider, memory_retriever=lambda query: selected
-        )
+        selected = [
+            {
+                "context_id": "memory-1",
+                "source": "chatgpt",
+                "category": "scheduling",
+                "content": "用户偏好上午进行深度工作",
+                "source_ref": "profile.md",
+                "score": 0.72,
+            }
+        ]
+        parser = SemanticScheduleCommandParser(provider, memory_retriever=lambda query: selected)
 
         result = parser.parse_with_context(
             "安排写方案",
@@ -136,9 +146,50 @@ model = "deepseek-v4-flash"
             [],
         )
 
-        self.assertEqual(
-            command.recurrence, {"frequency": "weekly", "weekdays": [1, 3, 5]}
+        self.assertEqual(command.recurrence, {"frequency": "weekly", "weekdays": [1, 3, 5]})
+
+    def test_interpretation_repairs_unverified_sources_once(self) -> None:
+        invalid = (
+            '{"intent":"create_schedule","tasks":[{"title":"晨间计划",'
+            '"title_source":"paraphrased","duration_minutes":30,'
+            '"duration_source":"30分钟","preferred_start":"2026-08-12T07:30:00+08:00",'
+            '"temporal_source":"7:30","task_type":"execution",'
+            '"recurrence":{"frequency":"daily"},"recurrence_source":"每天",'
+            '"fixed":true}],"unresolved":[],"assumptions":[]}'
         )
+        repaired = invalid.replace('"paraphrased"', '"晨间计划"')
+        provider = _SequenceProvider([invalid, repaired])
+        parser = SemanticScheduleCommandParser(provider)
+
+        result = parser.interpret(
+            "每天7:30晨间计划30分钟",
+            datetime(2026, 8, 12, 6, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            [],
+        )
+
+        self.assertEqual(result.tasks[0].title, "晨间计划")
+        self.assertFalse(result.unresolved)
+        self.assertEqual(len(provider.prompts), 2)
+        self.assertIn("validation_errors", provider.prompts[1])
+
+    def test_interpretation_cannot_drop_an_explicit_recurrence(self) -> None:
+        response = (
+            '{"intent":"create_schedule","tasks":[{"title":"晨间计划",'
+            '"title_source":"晨间计划","duration_minutes":30,'
+            '"duration_source":"30分钟","preferred_start":"2026-08-12T07:30:00+08:00",'
+            '"temporal_source":"7:30","task_type":"execution",'
+            '"recurrence":null,"recurrence_source":null,"fixed":true}],'
+            '"unresolved":[],"assumptions":[]}'
+        )
+        parser = SemanticScheduleCommandParser(_SequenceProvider([response, response]))
+
+        result = parser.interpret(
+            "每天7:30晨间计划30分钟",
+            datetime(2026, 8, 12, 6, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            [],
+        )
+
+        self.assertEqual(result.unresolved[0].field, "tasks[0].recurrence")
 
     def test_profile_is_read_only_when_fingerprint_changes(self) -> None:
         with TemporaryDirectory() as temporary:

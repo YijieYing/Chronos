@@ -9,6 +9,8 @@ export interface ApiEnvelope<T> {
 
 export interface TimelineTaskPayload {
   id: string;
+  series_id?: string | null;
+  series_start?: number | null;
   title: string;
   start: number;
   end: number;
@@ -29,10 +31,18 @@ export interface TimelineTaskPayload {
 
 export interface ProposalPayload {
   proposal_id: string;
-  status: "pending" | "accepted" | "rejected" | "restored" | "informational";
+  status: "pending" | "accepted" | "rejected" | "restored" | "informational" | "needs_clarification";
   requires_confirmation?: boolean;
   request_text: string;
   proposed_task: TimelineTaskPayload | null;
+  proposed_tasks?: Array<{
+    task_id: string;
+    title: string;
+    estimated_minutes: number;
+    preferred_start: string;
+    recurrence?: TimelineTask["recurrence"] | null;
+    fixed: boolean;
+  }>;
   results?: TimelineTaskPayload[];
   changes: Array<{ operation: string; task_id: string; summary: string }>;
   conflicts: Array<{ task_id: string; reason: string; remaining_minutes: number }>;
@@ -47,6 +57,8 @@ export interface ProposalPayload {
   }>;
   parser_mode?: "semantic" | "deterministic" | "deterministic_fallback";
   parser_warnings?: string[];
+  clarifications?: Array<{ field: string; question: string }>;
+  assumptions?: string[];
   created_at: string;
   updated_at: string;
 }

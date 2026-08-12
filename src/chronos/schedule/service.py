@@ -14,7 +14,7 @@ from chronos.schedule.models import (
     Task,
     TaskStatus,
 )
-from chronos.schedule.planner import DailyPlanner
+from chronos.schedule.planner import DailyPlanner, task_occurrence
 from chronos.schedule.ports import ScheduleRepository
 
 
@@ -152,6 +152,37 @@ class ScheduleService:
         ]
         return self._build_plan(task.preferred_start.date(), tasks)
 
+    def preview_horizon(
+        self, proposed_tasks: list[Task], start_date: date, days: int = 14
+    ) -> list[Plan]:
+        if not 1 <= days <= 90:
+            raise ValueError("preview horizon must be between 1 and 90 days")
+        proposed_ids = {task.task_id for task in proposed_tasks}
+        existing = [
+            task for task in self._repository.list_tasks() if task.task_id not in proposed_ids
+        ]
+        combined = [*existing, *proposed_tasks]
+        return [
+            self._build_plan(start_date + timedelta(days=offset), combined)
+            for offset in range(days)
+        ]
+
+    def apply_horizon_batch(self, tasks: list[Task], plans: list[Plan]) -> None:
+        if not tasks or not plans:
+            raise ValueError("batch requires tasks and plans")
+        planned_ids = {block.task_id for plan in plans for block in plan.blocks}
+        stored_tasks = [
+            replace(task, status=TaskStatus.PLANNED) if task.task_id in planned_ids else task
+            for task in tasks
+        ]
+        self._repository.apply_task_plan_batch(stored_tasks, plans)
+
+    def remove_horizon_batch(self, task_ids: list[str], target_dates: list[date]) -> None:
+        removed = set(task_ids)
+        remaining = [task for task in self._repository.list_tasks() if task.task_id not in removed]
+        plans = [self._build_plan(target, remaining) for target in target_dates]
+        self._repository.replace_task_plan_batch(task_ids, plans)
+
     def get_task(self, task_id: str) -> Task:
         task = self._repository.get_task(task_id)
         if task is None:
@@ -169,19 +200,49 @@ class ScheduleService:
         plan = self._repository.latest_plan(target_date)
         return plan.plan_id if plan else None
 
-    def timeline(self) -> dict[str, object]:
+    def timeline(self, horizon_days: int = 14) -> dict[str, object]:
+        if not 1 <= horizon_days <= 90:
+            raise ValueError("timeline horizon must be between 1 and 90 days")
         tasks = self._repository.list_tasks()
-        plans: dict[date, Plan | None] = {}
+        zone = ZoneInfo(self.settings()["timezone"])
+        today = datetime.now(zone).date()
+        recurring_dates: set[date] = set()
+        for task in tasks:
+            if task.preferred_start is None or task.recurrence is None:
+                continue
+            start = max(today, task.preferred_start.date())
+            for offset in range(horizon_days):
+                target = start + timedelta(days=offset)
+                if task_occurrence(task, target) is not None:
+                    recurring_dates.add(target)
+        for target in sorted(recurring_dates):
+            if self._repository.latest_plan(target) is None:
+                plan = self._build_plan(target, tasks)
+                self._repository.save_plan(plan)
+                self.activate_plan(plan.plan_id)
+
         projected: list[dict[str, object]] = []
         for task in tasks:
             if task.preferred_start is None:
                 continue
-            target = task.preferred_start.date()
-            if target not in plans:
-                plans[target] = self._repository.latest_plan(target)
-            projected.append(_timeline_task_dict(task, plans[target]))
+            if task.recurrence is None:
+                target = task.preferred_start.date()
+                projected.append(_timeline_task_dict(task, self._repository.latest_plan(target)))
+                continue
+            start = max(today, task.preferred_start.date())
+            for offset in range(horizon_days):
+                target = start + timedelta(days=offset)
+                occurrence = task_occurrence(task, target)
+                if occurrence is None:
+                    continue
+                plan = self._repository.latest_plan(target)
+                item = _timeline_task_dict(occurrence, plan)
+                item["series_id"] = task.task_id
+                item["series_start"] = int(task.preferred_start.timestamp() * 1000)
+                item["id"] = f"{task.task_id}::{item['start']}"
+                projected.append(item)
         return {
-            "tasks": projected,
+            "tasks": sorted(projected, key=lambda item: int(item["start"])),
             "settings": self.settings(),
         }
 
@@ -207,7 +268,9 @@ class ScheduleService:
                 task_type=str(item.get("task_type", "execution")),
                 fixed=bool(item.get("fixed", False)),
                 source=str(item.get("source", "user")),
-                recurrence=item.get("recurrence") if isinstance(item.get("recurrence"), dict) else None,
+                recurrence=item.get("recurrence")
+                if isinstance(item.get("recurrence"), dict)
+                else None,
                 created_at=datetime.fromtimestamp(
                     int(item.get("created_at", item["start"])) / 1000, UTC
                 ),
@@ -304,8 +367,7 @@ class ScheduleService:
             "settings": self.settings(),
             "tasks": [_task_dict(task) for task in self._repository.list_tasks()],
             "fixed_blocks": [
-                _fixed_dict(block)
-                for block in self._repository.list_fixed_blocks(target_date)
+                _fixed_dict(block) for block in self._repository.list_fixed_blocks(target_date)
             ],
             "plan": _plan_dict(self._repository.latest_plan(target_date)),
         }

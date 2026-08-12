@@ -24,6 +24,7 @@ export interface TimelineTask {
   source: "user" | "agent" | "schedule";
   recurrence?: RecurrenceRule;
   seriesId?: string;
+  seriesStart?: number;
   scheduled?: boolean;
   unscheduledReason?: string;
 }
@@ -76,6 +77,7 @@ export interface AgentCommand {
   status: "proposed" | "accepted" | "rejected";
   proposedTask?: TimelineTask;
   contextUsed?: string[];
+  canResolve?: boolean;
 }
 
 export interface ChronosLogEntry {

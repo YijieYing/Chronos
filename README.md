@@ -192,15 +192,15 @@ POST   /api/v1/proposals/<id>/restore
 ```
 
 V1 responses use a stable envelope with `schema_version`, `request_id`, `data`, and `error`.
-Agent requests are parsed into structured Schedule commands on the backend. The built-in parser
-supports create (including daily and weekly recurrence), move/resize, delete, and query requests
-behind a replaceable parser interface. Multi-task lists are rejected instead of being collapsed
-into one task. If semantic parsing falls back to local rules, the proposal shows an explicit
-warning so its title, time, and recurrence can be checked before acceptance. An explicitly written
-clock time is treated as fixed and cannot be silently shifted by the planner.
-Mutating commands are previewed by the same Schedule planner and persisted as explainable proposals;
-tasks change only after acceptance, and accepted changes can be restored. Proposal state and
-explanations survive UI reloads.
+Agent requests first become source-grounded interpretations on the backend. Missing or ambiguous
+title, duration, time, or recurrence fields produce clarification questions instead of guessed
+schedule writes. Resolved requests become typed command batches, including multiple daily or weekly
+series. The Schedule planner previews a 14-day horizon and persists an explainable proposal with
+per-date conflicts and plan versions. Explicit clock times are fixed and cannot be silently moved.
+Accepting or restoring a batch updates all task series and plans in one SQLite transaction; no task
+changes before acceptance. The timeline receives planner-generated recurring occurrences from the
+backend rather than expanding recurrence in the browser. Legacy move/resize, delete, and query
+commands remain available through the same replaceable parser boundary.
 
 Agent providers are selected through `config/agent.local.toml` (ignored by Git). The checked-in
 `config/agent.example.toml` contains presets for DeepSeek, OpenAI/OpenAI-compatible APIs, Anthropic,

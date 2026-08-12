@@ -34,13 +34,16 @@ Schedule can operate without Monitor. It does not infer actual behavior and does
 react to work-state updates.
 
 The HTTP timeline is a projection of Schedule tasks and activated plan blocks, not a separate
-write model. The former `timeline_tasks` storage is a migration source only. User edits and Agent
-requests both become Schedule commands; Agent commands first produce a persisted draft proposal
-and require explicit acceptance before changing tasks or activating a plan.
+write model. The former `timeline_tasks` storage is a migration source only. Recurring occurrences
+are projected by the backend planner over a bounded horizon and retain their series identity for
+editing. User edits and Agent requests both become Schedule commands; Agent commands first produce
+a persisted draft proposal and require explicit acceptance before changing tasks or plans.
 
-Natural-language parsing is an input adapter behind `ScheduleCommandParser`; it produces typed
-create, update, delete, or query commands. This keeps a future semantic-model provider separate from
-planner rules, persistence, stale-plan checks, and confirmation policy.
+Natural-language parsing is an input adapter behind `ScheduleCommandParser`. Semantic creation
+requests pass through a source-grounded `AgentInterpretation`, clarification when required, a typed
+command batch, 14-day planner preview, and atomic confirmation. Update, delete, and query requests
+remain typed single commands. This keeps model interpretation separate from planner rules,
+persistence, stale-plan checks, and confirmation policy.
 
 The first Schedule prototype uses a deterministic daily planner over the full 24-hour day. It sorts
 eligible tasks by priority, deadline, and creation time; subtracts fixed constraints; splits tasks

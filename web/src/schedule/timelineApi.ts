@@ -73,6 +73,8 @@ function fromPayload(payload: TimelineTaskPayload): TimelineTask {
     type: payload.task_type,
     source: payload.source,
     recurrence: payload.recurrence ?? undefined,
+    seriesId: payload.series_id ?? undefined,
+    seriesStart: payload.series_start ?? undefined,
     scheduled: payload.scheduled,
     unscheduledReason: payload.unscheduled_reason ?? undefined,
   };

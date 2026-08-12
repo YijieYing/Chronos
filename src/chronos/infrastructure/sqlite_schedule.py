@@ -159,9 +159,7 @@ class SQLiteScheduleRepository:
 
     def get_task(self, task_id: str) -> Task | None:
         with closing(self._connect()) as connection, connection:
-            row = connection.execute(
-                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         return _task_from_row(row) if row else None
 
     def list_fixed_blocks(self, target_date: date) -> list[FixedBlock]:
@@ -187,9 +185,7 @@ class SQLiteScheduleRepository:
 
     def delete_fixed_block(self, block_id: str) -> bool:
         with closing(self._connect()) as connection, connection:
-            cursor = connection.execute(
-                "DELETE FROM fixed_blocks WHERE block_id = ?", (block_id,)
-            )
+            cursor = connection.execute("DELETE FROM fixed_blocks WHERE block_id = ?", (block_id,))
             return cursor.rowcount > 0
 
     def next_plan_version(self, target_date: date) -> int:
@@ -246,9 +242,7 @@ class SQLiteScheduleRepository:
 
     def get_plan(self, plan_id: str) -> Plan | None:
         with closing(self._connect()) as connection, connection:
-            row = connection.execute(
-                "SELECT * FROM plans WHERE plan_id = ?", (plan_id,)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM plans WHERE plan_id = ?", (plan_id,)).fetchone()
             if row is None:
                 return None
             return self._plan_from_row(connection, row)
@@ -265,9 +259,7 @@ class SQLiteScheduleRepository:
 
     def activate_plan(self, plan_id: str) -> Plan:
         with closing(self._connect()) as connection, connection:
-            row = connection.execute(
-                "SELECT * FROM plans WHERE plan_id = ?", (plan_id,)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM plans WHERE plan_id = ?", (plan_id,)).fetchone()
             if row is None:
                 raise KeyError(plan_id)
             connection.execute(
@@ -285,6 +277,51 @@ class SQLiteScheduleRepository:
         plan = self.get_plan(plan_id)
         assert plan is not None
         return plan
+
+    def apply_task_plan_batch(self, tasks: list[Task], plans: list[Plan]) -> None:
+        """Atomically persist task series and activate every previewed daily plan."""
+        with closing(self._connect()) as connection, connection:
+            for task in tasks:
+                _save_task(connection, task)
+            for plan in plans:
+                _save_plan(connection, plan)
+                connection.execute(
+                    "UPDATE plans SET status = ? WHERE target_date = ? "
+                    "AND status = ? AND plan_id != ?",
+                    (
+                        PlanStatus.SUPERSEDED.value,
+                        plan.target_date.isoformat(),
+                        PlanStatus.ACTIVE.value,
+                        plan.plan_id,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE plans SET status = ? WHERE plan_id = ?",
+                    (PlanStatus.ACTIVE.value, plan.plan_id),
+                )
+
+    def replace_task_plan_batch(self, deleted_task_ids: list[str], plans: list[Plan]) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.executemany(
+                "DELETE FROM tasks WHERE task_id = ?",
+                [(value,) for value in deleted_task_ids],
+            )
+            for plan in plans:
+                _save_plan(connection, plan)
+                connection.execute(
+                    "UPDATE plans SET status = ? WHERE target_date = ? "
+                    "AND status = ? AND plan_id != ?",
+                    (
+                        PlanStatus.SUPERSEDED.value,
+                        plan.target_date.isoformat(),
+                        PlanStatus.ACTIVE.value,
+                        plan.plan_id,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE plans SET status = ? WHERE plan_id = ?",
+                    (PlanStatus.ACTIVE.value, plan.plan_id),
+                )
 
     def get_setting(self, key: str) -> str | None:
         with closing(self._connect()) as connection, connection:
@@ -355,9 +392,7 @@ def _task_from_row(row: sqlite3.Row) -> Task:
         splittable=bool(row["splittable"]),
         min_chunk_minutes=int(row["min_chunk_minutes"]),
         preferred_start=(
-            datetime.fromisoformat(row["preferred_start"])
-            if row["preferred_start"]
-            else None
+            datetime.fromisoformat(row["preferred_start"]) if row["preferred_start"] else None
         ),
         cognitive_intensity=float(row["cognitive_intensity"]),
         spectrum=float(row["spectrum"]),
@@ -365,6 +400,88 @@ def _task_from_row(row: sqlite3.Row) -> Task:
         fixed=bool(row["fixed"]),
         source=str(row["source"]),
         recurrence=json.loads(row["recurrence_json"]) if row["recurrence_json"] else None,
+    )
+
+
+def _save_task(connection: sqlite3.Connection, task: Task) -> None:
+    connection.execute(
+        """
+        INSERT INTO tasks (
+            task_id, title, estimated_minutes, priority, status, created_at,
+            deadline, splittable, min_chunk_minutes, preferred_start,
+            cognitive_intensity, spectrum, task_type, fixed, source, recurrence_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(task_id) DO UPDATE SET
+            title=excluded.title, estimated_minutes=excluded.estimated_minutes,
+            priority=excluded.priority, status=excluded.status, deadline=excluded.deadline,
+            splittable=excluded.splittable, min_chunk_minutes=excluded.min_chunk_minutes,
+            preferred_start=excluded.preferred_start,
+            cognitive_intensity=excluded.cognitive_intensity, spectrum=excluded.spectrum,
+            task_type=excluded.task_type, fixed=excluded.fixed, source=excluded.source,
+            recurrence_json=excluded.recurrence_json
+        """,
+        (
+            task.task_id,
+            task.title,
+            task.estimated_minutes,
+            task.priority,
+            task.status.value,
+            task.created_at.isoformat(),
+            task.deadline.isoformat() if task.deadline else None,
+            int(task.splittable),
+            task.min_chunk_minutes,
+            task.preferred_start.isoformat() if task.preferred_start else None,
+            task.cognitive_intensity,
+            task.spectrum,
+            task.task_type,
+            int(task.fixed),
+            task.source,
+            json.dumps(task.recurrence) if task.recurrence else None,
+        ),
+    )
+
+
+def _save_plan(connection: sqlite3.Connection, plan: Plan) -> None:
+    connection.execute(
+        "INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            plan.plan_id,
+            plan.version,
+            plan.target_date.isoformat(),
+            plan.timezone,
+            plan.status.value,
+            plan.created_at.isoformat(),
+            plan.based_on_version,
+        ),
+    )
+    connection.executemany(
+        "INSERT INTO schedule_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                block.block_id,
+                plan.plan_id,
+                block.task_id,
+                block.title,
+                block.start_at.isoformat(),
+                block.end_at.isoformat(),
+                block.status.value,
+                block.flexibility,
+            )
+            for block in plan.blocks
+        ],
+    )
+    connection.executemany(
+        "INSERT INTO unscheduled_tasks VALUES (?, ?, ?, ?, ?)",
+        [
+            (
+                plan.plan_id,
+                item.task_id,
+                item.title,
+                item.remaining_minutes,
+                item.reason,
+            )
+            for item in plan.unscheduled
+        ],
     )
 
 
@@ -380,8 +497,7 @@ def _fixed_from_row(row: sqlite3.Row) -> FixedBlock:
 
 def _ensure_task_columns(connection: sqlite3.Connection) -> None:
     columns = {
-        str(row["name"])
-        for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
     }
     additions = {
         "preferred_start": "TEXT",

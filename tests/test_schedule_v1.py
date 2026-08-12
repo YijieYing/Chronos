@@ -1,4 +1,5 @@
-from datetime import date, datetime
+import sqlite3
+from datetime import UTC, date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -7,6 +8,12 @@ from zoneinfo import ZoneInfo
 from chronos.api.routes.v1 import V1Router
 from chronos.infrastructure.sqlite_proposals import SQLiteProposalRepository
 from chronos.infrastructure.sqlite_schedule import SQLiteScheduleRepository
+from chronos.schedule.agent_interpretation import (
+    AgentInterpretation,
+    InterpretedTask,
+    UnresolvedField,
+)
+from chronos.schedule.models import Task, TaskStatus
 from chronos.schedule.proposals import ProposalService
 from chronos.schedule.service import ScheduleService
 
@@ -17,9 +24,7 @@ class ScheduleV1Test(TestCase):
         database = Path(self.temporary.name) / "chronos.sqlite3"
         self.repository = SQLiteScheduleRepository(database)
         self.schedule = ScheduleService(self.repository)
-        self.proposals = ProposalService(
-            self.schedule, SQLiteProposalRepository(database)
-        )
+        self.proposals = ProposalService(self.schedule, SQLiteProposalRepository(database))
         self.router = V1Router(self.schedule, self.proposals)
         self.zone = ZoneInfo("Asia/Shanghai")
 
@@ -45,15 +50,11 @@ class ScheduleV1Test(TestCase):
         )
 
         timeline = self.schedule.timeline()["tasks"]
-        flexible_projection = next(
-            item for item in timeline if item["id"] == flexible.task_id
-        )
+        flexible_projection = next(item for item in timeline if item["id"] == flexible.task_id)
 
         self.assertEqual(first_plan.status.value, "active")
         self.assertEqual(second_plan.version, 2)
-        self.assertEqual(
-            flexible_projection["start"], int(start.timestamp() * 1000) + 3_600_000
-        )
+        self.assertEqual(flexible_projection["start"], int(start.timestamp() * 1000) + 3_600_000)
         self.assertEqual(
             next(item for item in timeline if item["id"] == fixed.task_id)["fixed"],
             True,
@@ -180,9 +181,119 @@ class ScheduleV1Test(TestCase):
 """
 
         with self.assertRaisesRegex(ValueError, "一次只能创建一个任务"):
-            self.proposals.create(
-                request, now=datetime(2026, 8, 3, 8, 0, tzinfo=self.zone)
-            )
+            self.proposals.create(request, now=datetime(2026, 8, 3, 8, 0, tzinfo=self.zone))
+
+    def test_interpreted_morning_evening_batch_is_previewed_and_applied_atomically(self) -> None:
+        now = datetime(2026, 8, 12, 6, 0, tzinfo=self.zone)
+        interpretation = AgentInterpretation(
+            intent="create_schedule",
+            tasks=(
+                InterpretedTask(
+                    title="Morning routine",
+                    title_source="Morning routine",
+                    duration_minutes=30,
+                    duration_source="30 minutes",
+                    preferred_start=now.replace(hour=7, minute=30),
+                    temporal_source="07:30",
+                    task_type="execution",
+                    recurrence={"frequency": "daily"},
+                    recurrence_source="every day",
+                    fixed=True,
+                ),
+                InterpretedTask(
+                    title="Evening review",
+                    title_source="Evening review",
+                    duration_minutes=30,
+                    duration_source="30 minutes",
+                    preferred_start=now.replace(hour=21, minute=30),
+                    temporal_source="21:30",
+                    task_type="execution",
+                    recurrence={"frequency": "daily"},
+                    recurrence_source="every day",
+                    fixed=True,
+                ),
+            ),
+        )
+        service = ProposalService(
+            self.schedule,
+            SQLiteProposalRepository(Path(self.temporary.name) / "chronos.sqlite3"),
+            _InterpretationParser(interpretation),
+        )
+
+        proposal = service.create("private regression prompt", now=now)
+
+        self.assertEqual(proposal["status"], "pending")
+        self.assertEqual(len(proposal["commands"]), 2)
+        self.assertEqual(len(proposal["draft_plans"]), 14)
+        self.assertEqual(len(proposal["results"]), 28)
+        self.assertEqual(self.repository.list_tasks(), [])
+
+        accepted = service.accept(str(proposal["proposal_id"]))
+
+        stored = self.repository.list_tasks()
+        self.assertEqual(accepted["status"], "accepted")
+        self.assertEqual(len(stored), 2)
+        self.assertTrue(all(task.recurrence == {"frequency": "daily"} for task in stored))
+        self.assertEqual(
+            {task.preferred_start.strftime("%H:%M") for task in stored},
+            {"07:30", "21:30"},
+        )
+
+        timeline = self.schedule.timeline(horizon_days=14)["tasks"]
+        self.assertEqual(len(timeline), 28)
+        self.assertEqual(
+            {item["series_id"] for item in timeline}, {task.task_id for task in stored}
+        )
+        self.assertEqual(
+            {
+                datetime.fromtimestamp(item["start"] / 1000, self.zone).strftime("%H:%M")
+                for item in timeline
+            },
+            {"07:30", "21:30"},
+        )
+
+        restored = service.restore(str(proposal["proposal_id"]))
+        self.assertEqual(restored["status"], "restored")
+        self.assertEqual(self.repository.list_tasks(), [])
+
+    def test_task_and_horizon_plans_roll_back_as_one_transaction(self) -> None:
+        task = Task(
+            task_id="atomic-task",
+            title="Atomic task",
+            estimated_minutes=30,
+            priority=3,
+            status=TaskStatus.BACKLOG,
+            created_at=datetime.now(UTC),
+            preferred_start=datetime(2026, 8, 12, 7, 30, tzinfo=self.zone),
+            recurrence={"frequency": "daily"},
+            fixed=True,
+        )
+        plans = self.schedule.preview_horizon([task], date(2026, 8, 12), days=2)
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "UNIQUE constraint"):
+            self.repository.apply_task_plan_batch([task], [plans[0], plans[0]])
+
+        self.assertIsNone(self.repository.get_task(task.task_id))
+        self.assertIsNone(self.repository.get_plan(plans[0].plan_id))
+
+    def test_unresolved_interpretation_returns_clarification_without_planning(self) -> None:
+        interpretation = AgentInterpretation(
+            intent="create_schedule",
+            tasks=(),
+            unresolved=(UnresolvedField("tasks[0].duration", "每次需要多久？"),),
+        )
+        service = ProposalService(
+            self.schedule,
+            SQLiteProposalRepository(Path(self.temporary.name) / "chronos.sqlite3"),
+            _InterpretationParser(interpretation),
+        )
+
+        proposal = service.create("每天学习", now=datetime(2026, 8, 12, 6, 0, tzinfo=self.zone))
+
+        self.assertEqual(proposal["status"], "needs_clarification")
+        self.assertFalse(proposal["requires_confirmation"])
+        self.assertEqual(proposal["clarifications"][0]["question"], "每次需要多久？")
+        self.assertEqual(self.repository.list_tasks(), [])
 
     def test_existing_database_receives_additive_task_columns(self) -> None:
         database = Path(self.temporary.name) / "legacy.sqlite3"
@@ -206,3 +317,11 @@ class ScheduleV1Test(TestCase):
         )
 
         self.assertEqual(migrated.get_task(task.task_id).task_type, "execution")
+
+
+class _InterpretationParser:
+    def __init__(self, interpretation: AgentInterpretation) -> None:
+        self.interpretation = interpretation
+
+    def interpret(self, text, now, tasks):
+        return self.interpretation

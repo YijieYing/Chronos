@@ -31,14 +31,14 @@ export function TimelineCommand({
           {command.contextUsed.map((item) => <p key={item}>{item}</p>)}
         </details>
       )}
-      {command.status === "proposed" ? (
+      {command.status === "proposed" && command.canResolve !== false ? (
         <div>
           <button onClick={() => onResolve(command.id, true)}>Accept</button>
           <button onClick={() => onResolve(command.id, false)}>Reject</button>
         </div>
-      ) : (
+      ) : command.status !== "proposed" ? (
         <small>{command.status.toUpperCase()}</small>
-      )}
+      ) : null}
     </motion.div>
   );
 }

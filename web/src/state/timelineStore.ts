@@ -40,8 +40,9 @@ export function useTimelineStore() {
         setCommands(
           storedProposals
             .filter(
-              (proposal): proposal is ScheduleProposal & { task: TimelineTask } =>
-                proposal.status === "pending" && proposal.task !== null,
+              (proposal) =>
+                proposal.status === "pending" ||
+                proposal.status === "needs_clarification",
             )
             .map(proposalToCommand),
         );
@@ -59,7 +60,7 @@ export function useTimelineStore() {
   }, []);
 
   const sortedTasks = useMemo(
-    () => expandRecurringTasks(tasks).sort((left, right) => left.start - right.start),
+    () => tasks.slice().sort((left, right) => left.start - right.start),
     [tasks],
   );
 
@@ -106,22 +107,31 @@ export function useTimelineStore() {
   function updateTaskTiming(taskId: string, start: number, end: number) {
     const occurrence = sortedTasks.find((task) => task.id === taskId);
     const baseId = occurrence?.seriesId ?? taskId;
-    const previous = tasks.find((task) => task.id === baseId);
+    const previousOccurrence = tasks.find(
+      (task) => (task.seriesId ?? task.id) === baseId,
+    );
+    const previous = previousOccurrence
+      ? asSeriesBase(previousOccurrence)
+      : undefined;
     if (!previous || !occurrence || end <= start) return;
     const updated = updateBaseTiming(previous, occurrence, start, end);
     hasLocalMutation.current = true;
-    setTasks((current) =>
-      current.map((task) => (task.id === baseId ? updated : task)),
-    );
+    if (!occurrence.seriesId) {
+      setTasks((current) =>
+        current.map((task) => (task.id === baseId ? updated : task)),
+      );
+    }
     saveTimelineTask(updated)
       .then((storedTasks) => {
         setTasks(storedTasks);
         confirmStorage();
       })
       .catch((error: unknown) => {
-        setTasks((current) =>
-          current.map((task) => (task.id === baseId ? previous : task)),
-        );
+        if (!occurrence.seriesId) {
+          setTasks((current) =>
+            current.map((task) => (task.id === baseId ? previous : task)),
+          );
+        }
         reportStorageError(error);
       });
     setLogs((current) => [
@@ -141,7 +151,12 @@ export function useTimelineStore() {
   function updateTask(taskId: string, input: NewTaskInput) {
     const occurrence = sortedTasks.find((task) => task.id === taskId);
     const baseId = occurrence?.seriesId ?? taskId;
-    const previous = tasks.find((task) => task.id === baseId);
+    const previousOccurrence = tasks.find(
+      (task) => (task.seriesId ?? task.id) === baseId,
+    );
+    const previous = previousOccurrence
+      ? asSeriesBase(previousOccurrence)
+      : undefined;
     if (!previous || !occurrence) return;
 
     let start = input.start;
@@ -170,18 +185,22 @@ export function useTimelineStore() {
       recurrence: input.recurrence,
     };
     hasLocalMutation.current = true;
-    setTasks((current) =>
-      current.map((task) => (task.id === baseId ? updated : task)),
-    );
+    if (!occurrence.seriesId) {
+      setTasks((current) =>
+        current.map((task) => (task.id === baseId ? updated : task)),
+      );
+    }
     saveTimelineTask(updated)
       .then((storedTasks) => {
         setTasks(storedTasks);
         confirmStorage();
       })
       .catch((error: unknown) => {
-        setTasks((current) =>
-          current.map((task) => (task.id === baseId ? previous : task)),
-        );
+        if (!occurrence.seriesId) {
+          setTasks((current) =>
+            current.map((task) => (task.id === baseId ? previous : task)),
+          );
+        }
         reportStorageError(error);
       });
     setFocusTarget(input.start);
@@ -202,10 +221,17 @@ export function useTimelineStore() {
   function deleteTask(taskId: string) {
     const occurrence = sortedTasks.find((task) => task.id === taskId);
     const baseId = occurrence?.seriesId ?? taskId;
-    const previous = tasks.find((task) => task.id === baseId);
+    const previousOccurrence = tasks.find(
+      (task) => (task.seriesId ?? task.id) === baseId,
+    );
+    const previous = previousOccurrence
+      ? asSeriesBase(previousOccurrence)
+      : undefined;
     if (!previous) return;
     hasLocalMutation.current = true;
-    setTasks((current) => current.filter((task) => task.id !== baseId));
+    setTasks((current) =>
+      current.filter((task) => (task.seriesId ?? task.id) !== baseId),
+    );
     deleteTimelineTask(baseId)
       .then(loadTimelineTasks)
       .then((storedTasks) => {
@@ -240,13 +266,16 @@ export function useTimelineStore() {
   async function runAgent(request: string) {
     try {
       const proposal = await createProposal(request);
-      if (proposal.status === "pending" && proposal.task) {
+      if (
+        proposal.status === "pending" ||
+        proposal.status === "needs_clarification"
+      ) {
         const command = proposalToCommand(proposal);
         setCommands((current) => [
           ...current.filter((item) => item.status !== "proposed"),
           command,
         ]);
-        setFocusTarget(proposal.task.start);
+        if (proposal.task) setFocusTarget(proposal.task.start);
       } else if (proposal.results.length) {
         setFocusTarget(proposal.results[0].start);
       }
@@ -409,31 +438,44 @@ const formatTime = (time: number) =>
     hour12: false,
   }).format(time);
 
-const day = 24 * 60 * minute;
-
 function proposalToCommand(proposal: ScheduleProposal): AgentCommand {
-  if (!proposal.task) throw new Error("Mutation proposal is missing its task projection");
   const change = proposal.changes[0];
+  const needsClarification = proposal.status === "needs_clarification";
+  const cursorTime = proposal.task?.start ?? Date.now();
   return {
     id: proposal.id,
-    cursorTime: proposal.task.start,
-    title: change ? `${change.operation.toUpperCase()} proposal` : "Schedule proposal",
-    lines: [
-      `${formatTime(proposal.task.start)}–${formatTime(proposal.task.end)}`,
-      proposal.task.title,
+    cursorTime,
+    title: needsClarification
+      ? "Chronos needs clarification"
+      : proposal.proposedTasks.length > 1
+        ? `${proposal.proposedTasks.length} TASK PLAN`
+        : change ? `${change.operation.toUpperCase()} proposal` : "Schedule proposal",
+    lines: needsClarification
+      ? proposal.clarifications.map((item) => item.question)
+      : [
+      ...(proposal.proposedTasks.length > 1
+        ? proposal.proposedTasks.map((task) => {
+            const time = new Date(task.preferred_start).getTime();
+            const recurrence = task.recurrence?.frequency ?? "once";
+            return `${formatTime(time)} · ${task.title} · ${recurrence}`;
+          })
+        : proposal.task
+          ? [`${formatTime(proposal.task.start)}–${formatTime(proposal.task.end)}`, proposal.task.title]
+          : []),
       proposal.conflicts.length
         ? `${proposal.conflicts.length} conflict(s) reported`
         : "Planner verified",
       ...proposal.parserWarnings,
     ],
     status:
-      proposal.status === "pending"
+      proposal.status === "pending" || proposal.status === "needs_clarification"
         ? "proposed"
         : proposal.status === "accepted"
           ? "accepted"
           : "rejected",
-    proposedTask: proposal.task,
+    proposedTask: proposal.task ?? undefined,
     contextUsed: proposal.contextUsed.map((item) => item.content),
+    canResolve: proposal.status === "pending",
   };
 }
 
@@ -457,7 +499,9 @@ function proposalToLog(proposal: ScheduleProposal): ChronosLogEntry {
         ? "info"
         : proposal.status === "pending"
         ? "proposed"
-        : proposal.status === "accepted"
+        : proposal.status === "needs_clarification"
+          ? "info"
+          : proposal.status === "accepted"
           ? "applied"
           : proposal.status === "restored"
             ? "restored"
@@ -466,52 +510,6 @@ function proposalToLog(proposal: ScheduleProposal): ChronosLogEntry {
     proposalId: proposal.id,
     contextUsed: proposal.contextUsed.map((item) => item.content),
   };
-}
-
-function expandRecurringTasks(tasks: TimelineTask[]) {
-  const rangeStart = Date.now() - day;
-  const rangeEnd = Date.now() + 90 * day;
-  return tasks.flatMap((task) => {
-    if (!task.recurrence) return [task];
-    const duration = task.end - task.start;
-    const predictedDuration = task.predictedEnd - task.start;
-    const baseTime = new Date(task.start);
-    const cursor = new Date(rangeStart);
-    cursor.setHours(0, 0, 0, 0);
-    const instances: TimelineTask[] = [];
-
-    while (cursor.getTime() <= rangeEnd) {
-      const occurrence = new Date(cursor);
-      occurrence.setHours(
-        baseTime.getHours(),
-        baseTime.getMinutes(),
-        baseTime.getSeconds(),
-        0,
-      );
-      const occurrenceStart = occurrence.getTime();
-      const matches =
-        task.recurrence.frequency === "daily" ||
-        task.recurrence.weekdays.includes(occurrence.getDay());
-      if (matches && occurrenceStart >= task.start && occurrenceStart <= rangeEnd) {
-        instances.push({
-          ...task,
-          id: `${task.id}::${occurrenceStart}`,
-          seriesId: task.id,
-          start: occurrenceStart,
-          end: occurrenceStart + duration,
-          predictedEnd: occurrenceStart + predictedDuration,
-          scheduled:
-            occurrenceStart === task.start ? task.scheduled : false,
-          unscheduledReason:
-            occurrenceStart === task.start
-              ? task.unscheduledReason
-              : "plan_not_generated",
-        });
-      }
-      cursor.setDate(cursor.getDate() + 1);
-    }
-    return instances;
-  });
 }
 
 function updateBaseTiming(
@@ -543,5 +541,20 @@ function updateBaseTiming(
     start: baseStart.getTime(),
     end: baseStart.getTime() + duration,
     predictedEnd: baseStart.getTime() + duration,
+  };
+}
+
+function asSeriesBase(task: TimelineTask): TimelineTask {
+  if (!task.seriesId) return task;
+  const duration = task.end - task.start;
+  const start = task.seriesStart ?? task.start;
+  return {
+    ...task,
+    id: task.seriesId,
+    start,
+    end: start + duration,
+    predictedEnd: start + duration,
+    seriesId: undefined,
+    seriesStart: undefined,
   };
 }
