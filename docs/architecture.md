@@ -41,7 +41,7 @@ a persisted draft proposal and require explicit acceptance before changing tasks
 
 Natural-language parsing is an input adapter behind `ScheduleCommandParser`. Semantic creation
 requests pass through a source-grounded `AgentInterpretation`, clarification when required, a typed
-command batch, 14-day planner preview, and atomic confirmation. Update, delete, and query requests
+`ScheduleCommandBatch`, 14-day planner preview, and atomic confirmation. Update, delete, and query requests
 remain typed single commands. This keeps model interpretation separate from planner rules,
 persistence, stale-plan checks, and confirmation policy.
 

@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from chronos.schedule.command_batch import ScheduleCommandBatch, ScheduleCreateCommand
 from chronos.schedule.commands import (
     DeterministicScheduleCommandParser,
     ScheduleCommand,
@@ -116,8 +117,7 @@ class ProposalService:
     def _create_batch(
         self, text, interpretation, start_date: date
     ) -> dict[str, object]:
-        proposed: list[Task] = []
-        commands: list[dict[str, object]] = []
+        typed_commands: list[ScheduleCreateCommand] = []
         for item in interpretation.tasks:
             if item.duration_minutes is None or item.preferred_start is None:
                 raise ValueError("resolved interpretation still contains missing fields")
@@ -138,21 +138,21 @@ class ProposalService:
                 source="agent",
                 recurrence=item.recurrence,
             )
-            proposed.append(task)
-            commands.append(
-                {
-                    "type": "create_task",
-                    "task_id": task.task_id,
-                    "after": _task_dict(task),
-                    "provenance": {
-                        "title": item.title_source,
-                        "duration": item.duration_source,
-                        "time": item.temporal_source,
-                        "recurrence": item.recurrence_source,
-                    },
-                }
+            typed_commands.append(
+                ScheduleCreateCommand(
+                    task=task,
+                    title_source=item.title_source,
+                    duration_source=item.duration_source,
+                    temporal_source=item.temporal_source,
+                    recurrence_source=item.recurrence_source,
+                )
             )
-        plans = self._schedule.preview_horizon(proposed, start_date, days=14)
+        batch = ScheduleCommandBatch(tuple(typed_commands))
+        proposed = batch.tasks
+        commands = batch.to_dicts()
+        plans = self._schedule.preview_horizon(
+            proposed, start_date, days=batch.horizon_days
+        )
         versions = {
             plan.target_date.isoformat(): self._schedule.current_plan_version(plan.target_date)
             for plan in plans
