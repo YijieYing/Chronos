@@ -3,18 +3,28 @@ import { motion } from "framer-motion";
 import styles from "./Agent.module.css";
 
 interface AgentInputProps {
-  onSubmit: (command: string) => void;
+  onSubmit: (command: string) => Promise<void>;
 }
 
 export function AgentInput({ onSubmit }: AgentInputProps) {
   const [value, setValue] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     const command = value.trim();
-    if (!command) return;
-    onSubmit(command);
-    setValue("");
+    if (!command || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onSubmit(command);
+      setValue("");
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -29,10 +39,26 @@ export function AgentInput({ onSubmit }: AgentInputProps) {
         aria-label="Chronos command"
         value={value}
         onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            event.currentTarget.form?.requestSubmit();
+          }
+        }}
         placeholder="告诉 Chronos 要安排、移动或查找什么…"
+        disabled={submitting}
       />
-      <span className={styles.commandHint}>⌘ ↵</span>
-      <button type="submit">RUN</button>
+      <span className={styles.commandHint}>
+        {submitting ? "ANALYZING…" : "⌘ ↵"}
+      </span>
+      <button type="submit" disabled={submitting}>
+        {submitting ? "WAIT" : "RUN"}
+      </button>
+      {error && (
+        <output className={styles.commandError} role="alert" title={error}>
+          AGENT ERROR · {error}
+        </output>
+      )}
     </motion.form>
   );
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import traceback
 from datetime import UTC, date, datetime, time, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,20 +13,20 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-from chronos.infrastructure.sqlite_schedule import SQLiteScheduleRepository
-from chronos.infrastructure.sqlite_cognitive_state import SQLiteCognitiveStateRepository
-from chronos.infrastructure.sqlite_proposals import SQLiteProposalRepository
-from chronos.infrastructure.sqlite_agent_memory import SQLiteAgentMemoryRepository
-from chronos.infrastructure.sqlite_timeline import SQLiteTimelineRepository
 from chronos.api.contracts.common import failure, success
 from chronos.api.contracts.schedule import scheduled_task_values
 from chronos.api.routes.v1 import V1Router
+from chronos.infrastructure.sqlite_agent_memory import SQLiteAgentMemoryRepository
+from chronos.infrastructure.sqlite_cognitive_state import SQLiteCognitiveStateRepository
+from chronos.infrastructure.sqlite_proposals import SQLiteProposalRepository
+from chronos.infrastructure.sqlite_schedule import SQLiteScheduleRepository
+from chronos.infrastructure.sqlite_timeline import SQLiteTimelineRepository
 from chronos.monitor.cognitive import cognitive_point_dict
 from chronos.monitor.serialization import observation_from_json
 from chronos.monitor.service import MonitorService
-from chronos.schedule.models import TaskStatus
 from chronos.schedule.agent_config import load_agent_config
-from chronos.schedule.agent_memory import AgentMemoryService, MAX_ARCHIVE_BYTES
+from chronos.schedule.agent_memory import MAX_ARCHIVE_BYTES, AgentMemoryService
+from chronos.schedule.models import TaskStatus
 from chronos.schedule.proposals import ProposalService
 from chronos.schedule.semantic_parser import build_command_parser
 from chronos.schedule.service import ScheduleService
@@ -158,6 +159,15 @@ class ScheduleRequestHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.NOT_FOUND, f"not found: {error.args[0]}")
         except (TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
+        except RuntimeError as error:
+            print(
+                f"Agent request failed: {type(error).__name__}: {error}",
+                flush=True,
+            )
+            self._error(HTTPStatus.BAD_GATEWAY, str(error))
+        except Exception:
+            traceback.print_exc()
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
     def do_PATCH(self) -> None:  # noqa: N802
         try:
@@ -172,6 +182,15 @@ class ScheduleRequestHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.NOT_FOUND, f"not found: {error.args[0]}")
         except (TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
+        except RuntimeError as error:
+            print(
+                f"Agent request failed: {type(error).__name__}: {error}",
+                flush=True,
+            )
+            self._error(HTTPStatus.BAD_GATEWAY, str(error))
+        except Exception:
+            traceback.print_exc()
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
     def do_PUT(self) -> None:  # noqa: N802
         try:
@@ -247,7 +266,11 @@ class ScheduleRequestHandler(BaseHTTPRequestHandler):
 
     def _error(self, status: HTTPStatus, message: str) -> None:
         if urlparse(self.path).path.startswith("/api/v1/"):
-            code = "not_found" if status == HTTPStatus.NOT_FOUND else "invalid_request"
+            code = {
+                HTTPStatus.NOT_FOUND: "not_found",
+                HTTPStatus.BAD_GATEWAY: "upstream_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR: "internal_error",
+            }.get(status, "invalid_request")
             self._json(failure(code, message), status)
             return
         self._json({"error": message}, status)
@@ -270,12 +293,22 @@ class ScheduleRequestHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.NOT_FOUND, f"not found: {target}")
         except (TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
+        except RuntimeError as error:
+            print(
+                f"Agent request failed: {type(error).__name__}: {error}",
+                flush=True,
+            )
+            self._error(HTTPStatus.BAD_GATEWAY, str(error))
+        except Exception:
+            traceback.print_exc()
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
         return True
 
     def _static(self, request_path: str) -> None:
         relative = "index.html" if request_path in {"", "/"} else request_path.lstrip("/")
         candidate = (self.web_root / relative).resolve()
-        if self.web_root.resolve() not in candidate.parents and candidate != self.web_root.resolve():
+        resolved_root = self.web_root.resolve()
+        if resolved_root not in candidate.parents and candidate != resolved_root:
             self._error(HTTPStatus.NOT_FOUND, "not found")
             return
         if not candidate.is_file():

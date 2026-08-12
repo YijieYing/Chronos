@@ -283,6 +283,7 @@ export function useTimelineStore() {
       confirmStorage();
     } catch (error) {
       reportStorageError(error);
+      throw error;
     }
   }
 
