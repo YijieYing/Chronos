@@ -68,6 +68,13 @@ class Task:
                 weekdays = self.recurrence.get("weekdays")
                 if not isinstance(weekdays, list) or not weekdays:
                     raise ValueError("weekly recurrence requires weekdays")
+            until_value = self.recurrence.get("until")
+            if until_value is not None:
+                until = date.fromisoformat(str(until_value))
+                if self.preferred_start is None:
+                    raise ValueError("bounded recurrence requires preferred_start")
+                if until < self.preferred_start.date():
+                    raise ValueError("recurrence until cannot precede preferred_start")
 
 
 @dataclass(frozen=True, slots=True)

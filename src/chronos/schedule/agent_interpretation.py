@@ -28,7 +28,7 @@ class InterpretedTask:
     temporal_source: str | None
     task_type: str
     recurrence: dict[str, object] | None
-    recurrence_source: str | None
+    recurrence_sources: dict[str, tuple[str, ...]]
     fixed: bool
 
 

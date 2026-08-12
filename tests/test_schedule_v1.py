@@ -197,7 +197,7 @@ class ScheduleV1Test(TestCase):
                     temporal_source="07:30",
                     task_type="execution",
                     recurrence={"frequency": "daily"},
-                    recurrence_source="every day",
+                    recurrence_sources={"frequency": ("every day",)},
                     fixed=True,
                 ),
                 InterpretedTask(
@@ -209,7 +209,7 @@ class ScheduleV1Test(TestCase):
                     temporal_source="21:30",
                     task_type="execution",
                     recurrence={"frequency": "daily"},
-                    recurrence_source="every day",
+                    recurrence_sources={"frequency": ("every day",)},
                     fixed=True,
                 ),
             ),
@@ -294,6 +294,60 @@ class ScheduleV1Test(TestCase):
         self.assertFalse(proposal["requires_confirmation"])
         self.assertEqual(proposal["clarifications"][0]["question"], "每次需要多久？")
         self.assertEqual(self.repository.list_tasks(), [])
+
+    def test_bounded_daily_batch_stops_on_inclusive_until_date(self) -> None:
+        now = datetime(2026, 8, 12, 6, 0, tzinfo=self.zone)
+        recurrence = {"frequency": "daily", "until": "2026-08-18"}
+        evidence = {"frequency": ("每天",), "until": ("到8.18为止",)}
+        interpretation = AgentInterpretation(
+            intent="create_schedule",
+            tasks=(
+                InterpretedTask(
+                    title="托福口语练习",
+                    title_source="托福口语练习",
+                    duration_minutes=90,
+                    duration_source="七点半到九点",
+                    preferred_start=now.replace(hour=7, minute=30),
+                    temporal_source="早上七点半到九点",
+                    task_type="research",
+                    recurrence=recurrence,
+                    recurrence_sources=evidence,
+                    fixed=True,
+                ),
+                InterpretedTask(
+                    title="作文练习",
+                    title_source="作文练习",
+                    duration_minutes=90,
+                    duration_source="晚上九点半到十一点",
+                    preferred_start=now.replace(hour=21, minute=30),
+                    temporal_source="晚上九点半到十一点",
+                    task_type="creative",
+                    recurrence=recurrence,
+                    recurrence_sources=evidence,
+                    fixed=True,
+                ),
+            ),
+        )
+        service = ProposalService(
+            self.schedule,
+            SQLiteProposalRepository(Path(self.temporary.name) / "chronos.sqlite3"),
+            _InterpretationParser(interpretation),
+        )
+
+        proposal = service.create("bounded private regression", now=now)
+
+        self.assertEqual(proposal["status"], "pending")
+        self.assertEqual(len(proposal["results"]), 14)
+        last_dates = {
+            datetime.fromtimestamp(item["start"] / 1000, self.zone).date()
+            for item in proposal["results"]
+        }
+        self.assertEqual(min(last_dates), date(2026, 8, 12))
+        self.assertEqual(max(last_dates), date(2026, 8, 18))
+        self.assertEqual(
+            proposal["commands"][1]["provenance"]["recurrence"]["frequency"],
+            ["每天"],
+        )
 
     def test_existing_database_receives_additive_task_columns(self) -> None:
         database = Path(self.temporary.name) / "legacy.sqlite3"

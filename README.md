@@ -195,7 +195,9 @@ V1 responses use a stable envelope with `schema_version`, `request_id`, `data`, 
 Agent requests first become source-grounded interpretations on the backend. Missing or ambiguous
 title, duration, time, or recurrence fields produce clarification questions instead of guessed
 schedule writes. Resolved requests become typed command batches, including multiple daily or weekly
-series. The Schedule planner previews a 14-day horizon and persists an explainable proposal with
+series and inclusive recurrence end dates. Shared Chinese modifiers such as “每天” can ground more
+than one task through field-level source fragments without weakening verbatim provenance checks.
+The Schedule planner previews a 14-day horizon and persists an explainable proposal with
 per-date conflicts and plan versions. Explicit clock times are fixed and cannot be silently moved.
 Accepting or restoring a batch updates all task series and plans in one SQLite transaction; no task
 changes before acceptance. The timeline receives planner-generated recurring occurrences from the

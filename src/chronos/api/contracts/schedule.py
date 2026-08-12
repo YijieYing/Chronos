@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
-
 
 TASK_TYPES = {
     "creative",
@@ -58,11 +57,14 @@ def _recurrence(value: object) -> dict[str, object] | None:
     if not isinstance(value, dict):
         raise ValueError("recurrence must be an object")
     frequency = str(value.get("frequency", ""))
-    if frequency == "daily":
-        return {"frequency": "daily"}
-    if frequency != "weekly":
+    result: dict[str, object] = {"frequency": frequency}
+    if frequency not in {"daily", "weekly"}:
         raise ValueError("recurrence frequency must be daily or weekly")
-    weekdays = sorted({int(day) for day in value.get("weekdays", [])})
-    if not weekdays or any(day < 0 or day > 6 for day in weekdays):
-        raise ValueError("weekdays must contain values from 0 to 6")
-    return {"frequency": "weekly", "weekdays": weekdays}
+    if frequency == "weekly":
+        weekdays = sorted({int(day) for day in value.get("weekdays", [])})
+        if not weekdays or any(day < 0 or day > 6 for day in weekdays):
+            raise ValueError("weekdays must contain values from 0 to 6")
+        result["weekdays"] = weekdays
+    if value.get("until") not in {None, ""}:
+        result["until"] = date.fromisoformat(str(value["until"])).isoformat()
+    return result

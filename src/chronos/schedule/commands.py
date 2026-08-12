@@ -208,8 +208,9 @@ def _validate_single_create_request(text: str) -> None:
 
 
 def _recurrence(text: str, now: datetime) -> dict[str, object] | None:
+    until = _recurrence_until(text, now)
     if re.search(r"每天|每日|daily|every\s+day", text, re.I):
-        return {"frequency": "daily"}
+        return {"frequency": "daily", **({"until": until} if until else {})}
     if not re.search(r"每周|工作日|周末|weekly|every\s+week", text, re.I):
         return None
     if "工作日" in text:
@@ -236,7 +237,22 @@ def _recurrence(text: str, now: datetime) -> dict[str, object] | None:
         weekdays = sorted({mapping[name] for name in names})
     if not weekdays:
         weekdays = [(now.weekday() + 1) % 7]
-    return {"frequency": "weekly", "weekdays": weekdays}
+    return {
+        "frequency": "weekly",
+        "weekdays": weekdays,
+        **({"until": until} if until else {}),
+    }
+
+
+def _recurrence_until(text: str, now: datetime) -> str | None:
+    match = re.search(
+        r"(?:到|至|截止(?:到)?|直到)\s*(?:(\d{4})[年./-])?(\d{1,2})[月./-](\d{1,2})日?\s*(?:为止)?",
+        text,
+    )
+    if not match:
+        return None
+    year = int(match.group(1) or now.year)
+    return date(year, int(match.group(2)), int(match.group(3))).isoformat()
 
 
 def _first_recurrence_date(

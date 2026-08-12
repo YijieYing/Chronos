@@ -286,7 +286,8 @@ task list. Never copy the full request into title; title must be a concise task 
 create_task, update_task, delete_task, query_schedule. Dates and times must be ISO 8601 with the
 supplied timezone and must preserve times explicitly requested by the user. For create_task return
 title, preferred_start, estimated_minutes, task_type, and optional recurrence. Recurrence is either
-{"frequency":"daily"} or {"frequency":"weekly","weekdays":[0..6]}, where 0 is Sunday. For
+{"frequency":"daily","until":"YYYY-MM-DD"} or {"frequency":"weekly","weekdays":[0..6],
+"until":"YYYY-MM-DD"}, where 0 is Sunday and until is optional and inclusive. For
 an exact clock time explicitly supplied by the user, also return "fixed":true; never silently move
 an exact-time task. A broad period such as morning or afternoon is not fixed. For
 update_task return task_id and only the new preferred_start and/or estimated_minutes. For
@@ -304,7 +305,8 @@ For create_schedule return:
 {"intent":"create_schedule","tasks":[{"title":"concise name","title_source":"exact source
 phrase","duration_minutes":30,"duration_source":"exact source phrase","preferred_start":"ISO
 8601","temporal_source":"exact source phrase","task_type":"execution","recurrence":{"frequency":
-"daily"},"recurrence_source":"exact source phrase","fixed":true}],"unresolved":[],"assumptions":[]}
+"daily","until":"YYYY-MM-DD"},"recurrence_sources":{"frequency":["exact source phrase"],
+"until":["exact source phrase"]},"fixed":true}],"unresolved":[],"assumptions":[]}
 
 One user request may produce multiple tasks. Morning and evening occurrences described as separate
 activities must be separate tasks. Never copy the entire request into a title. Never invent a time,
@@ -312,8 +314,12 @@ duration, weekday, recurrence, or task name. If a required field is absent or am
 and add {"field":"tasks[0].duration_minutes","question":"..."} to unresolved. Source strings must
 be verbatim substrings of the request; personal context can guide task_type but cannot supply a
 missing explicit time or duration. Every *_source must be copied character-for-character as a
-contiguous substring of request, never paraphrased. Exact clock times are fixed. Broad windows such
-as morning are not exact times and must be unresolved unless the user supplied a clock time.
+contiguous substring of request, never paraphrased. Evidence fragments may be shared by multiple
+tasks. recurrence_sources is field-level: frequency evidence and until evidence are separate arrays
+of exact request substrings. A phrase such as “每天” may ground every task it grammatically governs.
+If the request states an end date, recurrence.until is required and the date is inclusive. Exact
+clock times are fixed. Broad windows such as morning are not exact times and must be unresolved
+unless the user supplied a clock time.
 
 For update_task, delete_task, or query_schedule, return intent plus a single legacy_command object
 using the existing command schema and an empty tasks array. Never invent task ids."""
@@ -508,12 +514,11 @@ def _interpretation_from_response(
             unresolved,
             required=False,
         )
-        recurrence_source = _verified_source(
-            item.get("recurrence_source"),
+        recurrence_sources = _verified_recurrence_sources(
+            item,
             request_text,
-            f"tasks[{index}].recurrence",
+            index,
             unresolved,
-            required=False,
         )
         duration = _optional_positive_int(item.get("duration_minutes"))
         preferred_start = _optional_datetime(item.get("preferred_start"), now)
@@ -532,12 +537,29 @@ def _interpretation_from_response(
                 f"tasks[{index}].preferred_start",
                 f"「{title or '该任务'}」应在几点开始？",
             )
-        if recurrence is not None and not recurrence_source:
+        if recurrence is not None and not recurrence_sources.get("frequency"):
             _add_unresolved(
                 unresolved,
                 f"tasks[{index}].recurrence",
                 f"「{title or '该任务'}」的重复规则是什么？",
             )
+        if (
+            recurrence is not None
+            and recurrence.get("until") is not None
+            and not recurrence_sources.get("until")
+        ):
+            _add_unresolved(
+                unresolved,
+                f"tasks[{index}].recurrence.until",
+                f"「{title or '该任务'}」的截止日期依据是什么？",
+            )
+        if recurrence is not None and _requests_until(request_text):
+            if recurrence.get("until") is None:
+                _add_unresolved(
+                    unresolved,
+                    f"tasks[{index}].recurrence.until",
+                    f"请确认「{title or '该任务'}」重复到哪一天。",
+                )
         if recurrence is None and _requests_recurrence(request_text):
             _add_unresolved(
                 unresolved,
@@ -557,7 +579,7 @@ def _interpretation_from_response(
                 temporal_source=temporal_source,
                 task_type=task_type,
                 recurrence=recurrence,
-                recurrence_source=recurrence_source,
+                recurrence_sources=recurrence_sources,
                 fixed=bool(item.get("fixed", False)) and bool(temporal_source),
             )
         )
@@ -600,6 +622,46 @@ def _verified_source(
     return source
 
 
+def _verified_recurrence_sources(
+    item: dict[str, object],
+    request_text: str,
+    index: int,
+    unresolved: list[UnresolvedField],
+) -> dict[str, tuple[str, ...]]:
+    raw = item.get("recurrence_sources")
+    if raw is None and item.get("recurrence_source") is not None:
+        raw = {"frequency": [item["recurrence_source"]]}
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        _add_unresolved(
+            unresolved,
+            f"tasks[{index}].recurrence",
+            "重复规则的原文依据格式无效。",
+        )
+        return {}
+    verified: dict[str, tuple[str, ...]] = {}
+    for field in ("frequency", "weekdays", "until"):
+        values = raw.get(field)
+        if values is None:
+            continue
+        candidates = values if isinstance(values, list) else [values]
+        sources: list[str] = []
+        for value in candidates:
+            source = str(value or "").strip()
+            if source and source in request_text:
+                sources.append(source)
+            else:
+                _add_unresolved(
+                    unresolved,
+                    f"tasks[{index}].recurrence.{field}",
+                    f"请明确重复规则的 {field}；Agent 返回的依据不在原文中。",
+                )
+        if sources:
+            verified[field] = tuple(sources)
+    return verified
+
+
 def _add_unresolved(unresolved: list[UnresolvedField], field: str, question: str) -> None:
     if not any(item.field == field for item in unresolved):
         unresolved.append(UnresolvedField(field, question))
@@ -608,7 +670,16 @@ def _add_unresolved(unresolved: list[UnresolvedField], field: str, question: str
 def _optional_datetime(value: object, now: datetime) -> datetime | None:
     if value in {None, ""}:
         return None
-    parsed = datetime.fromisoformat(str(value))
+    text = str(value).strip()
+    clock = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?", text)
+    if clock:
+        return now.replace(
+            hour=int(clock.group(1)),
+            minute=int(clock.group(2)),
+            second=int(clock.group(3) or 0),
+            microsecond=0,
+        )
+    parsed = datetime.fromisoformat(text)
     return parsed.replace(tzinfo=now.tzinfo) if parsed.tzinfo is None else parsed
 
 
@@ -627,14 +698,17 @@ def _optional_recurrence(value: object) -> dict[str, object] | None:
     if not isinstance(value, dict):
         raise ValueError("recurrence must be an object")
     frequency = str(value.get("frequency", ""))
-    if frequency == "daily":
-        return {"frequency": "daily"}
-    if frequency != "weekly":
+    result: dict[str, object] = {"frequency": frequency}
+    if frequency not in {"daily", "weekly"}:
         raise ValueError("recurrence frequency must be daily or weekly")
-    weekdays = sorted({int(day) for day in value.get("weekdays", [])})
-    if not weekdays or any(day < 0 or day > 6 for day in weekdays):
-        raise ValueError("weekly recurrence requires weekdays from 0 to 6")
-    return {"frequency": "weekly", "weekdays": weekdays}
+    if frequency == "weekly":
+        weekdays = sorted({int(day) for day in value.get("weekdays", [])})
+        if not weekdays or any(day < 0 or day > 6 for day in weekdays):
+            raise ValueError("weekly recurrence requires weekdays from 0 to 6")
+        result["weekdays"] = weekdays
+    if value.get("until") not in {None, ""}:
+        result["until"] = date.fromisoformat(str(value["until"])).isoformat()
+    return result
 
 
 def _normalized_title(value: str) -> str:
@@ -649,6 +723,17 @@ def _requests_recurrence(value: str) -> bool:
     return bool(
         re.search(
             r"每天|每日|每晚|每早|每周|daily|every\s+day|weekly|every\s+week",
+            value,
+            re.I,
+        )
+    )
+
+
+def _requests_until(value: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:到|至|截止(?:到)?|直到).{0,16}(?:为止|之前|以前|前|\d)|"
+            r"(?:until|through|ending|ends?)\b",
             value,
             re.I,
         )

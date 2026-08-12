@@ -45,6 +45,11 @@ requests pass through a source-grounded `AgentInterpretation`, clarification whe
 remain typed single commands. This keeps model interpretation separate from planner rules,
 persistence, stale-plan checks, and confirmation policy.
 
+Daily and weekly recurrence may include an inclusive `until` date. Interpretation provenance is
+field-level and supports multiple exact source fragments, allowing one grammatical modifier to
+ground multiple tasks while keeping every frequency, weekday, and end-date claim traceable to the
+request.
+
 The first Schedule prototype uses a deterministic daily planner over the full 24-hour day. It sorts
 eligible tasks by priority, deadline, and creation time; subtracts fixed constraints; splits tasks
 only when allowed; and records any remainder explicitly. Generated plans are immutable, versioned

@@ -144,7 +144,7 @@ class ProposalService:
                     title_source=item.title_source,
                     duration_source=item.duration_source,
                     temporal_source=item.temporal_source,
-                    recurrence_source=item.recurrence_source,
+                    recurrence_sources=item.recurrence_sources,
                 )
             )
         batch = ScheduleCommandBatch(tuple(typed_commands))

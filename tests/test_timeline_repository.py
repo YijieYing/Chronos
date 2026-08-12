@@ -18,14 +18,25 @@ class TimelineRepositoryTest(TestCase):
     def test_recurring_series_is_stored_as_one_row(self) -> None:
         task = self.repository.create_task(
             _task(
-                recurrence={"frequency": "weekly", "weekdays": [5, 1, 3, 1]}
+                recurrence={
+                    "frequency": "weekly",
+                    "weekdays": [5, 1, 3, 1],
+                    "until": "2026-08-31",
+                }
             )
         )
 
         stored = self.repository.list_tasks()
 
         self.assertEqual(len(stored), 1)
-        self.assertEqual(task["recurrence"], {"frequency": "weekly", "weekdays": [1, 3, 5]})
+        self.assertEqual(
+            task["recurrence"],
+            {
+                "frequency": "weekly",
+                "weekdays": [1, 3, 5],
+                "until": "2026-08-31",
+            },
+        )
         self.assertEqual(stored[0]["recurrence"], task["recurrence"])
 
     def test_save_updates_series_without_changing_creation_time(self) -> None:

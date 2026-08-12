@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from datetime import date
 from pathlib import Path
 from typing import Any
-
 
 TASK_TYPES = {
     "creative",
@@ -53,12 +53,21 @@ class SQLiteTimelineRepository:
                     recurrence_frequency TEXT,
                     recurrence_weekdays TEXT,
                     created_at_ms INTEGER NOT NULL,
-                    updated_at_ms INTEGER NOT NULL
+                    updated_at_ms INTEGER NOT NULL,
+                    recurrence_until TEXT
                 );
                 CREATE INDEX IF NOT EXISTS timeline_tasks_start
                     ON timeline_tasks(start_at_ms);
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(timeline_tasks)")
+            }
+            if "recurrence_until" not in columns:
+                connection.execute(
+                    "ALTER TABLE timeline_tasks ADD COLUMN recurrence_until TEXT"
+                )
 
     def list_tasks(self) -> list[dict[str, object]]:
         with closing(self._connect()) as connection, connection:
@@ -81,7 +90,7 @@ class SQLiteTimelineRepository:
                 connection.execute(
                     """
                     INSERT INTO timeline_tasks VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     _task_values(task),
@@ -99,7 +108,7 @@ class SQLiteTimelineRepository:
             connection.execute(
                 """
                 INSERT INTO timeline_tasks VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 ON CONFLICT(task_id) DO UPDATE SET
                     title=excluded.title,
@@ -113,6 +122,7 @@ class SQLiteTimelineRepository:
                     source=excluded.source,
                     recurrence_frequency=excluded.recurrence_frequency,
                     recurrence_weekdays=excluded.recurrence_weekdays,
+                    recurrence_until=excluded.recurrence_until,
                     updated_at_ms=excluded.updated_at_ms
                 """,
                 _task_values(task),
@@ -176,17 +186,20 @@ def _validate_recurrence(value: object) -> dict[str, object] | None:
     if not isinstance(value, dict):
         raise ValueError("recurrence must be an object")
     frequency = str(value.get("frequency", ""))
-    if frequency == "daily":
-        return {"frequency": "daily"}
-    if frequency != "weekly":
+    result: dict[str, object] = {"frequency": frequency}
+    if frequency not in {"daily", "weekly"}:
         raise ValueError("recurrence frequency must be daily or weekly")
-    raw_weekdays = value.get("weekdays")
-    if not isinstance(raw_weekdays, list):
-        raise ValueError("weekly recurrence requires weekdays")
-    weekdays = sorted({int(day) for day in raw_weekdays})
-    if not weekdays or any(day < 0 or day > 6 for day in weekdays):
-        raise ValueError("weekdays must contain values from 0 to 6")
-    return {"frequency": "weekly", "weekdays": weekdays}
+    if frequency == "weekly":
+        raw_weekdays = value.get("weekdays")
+        if not isinstance(raw_weekdays, list):
+            raise ValueError("weekly recurrence requires weekdays")
+        weekdays = sorted({int(day) for day in raw_weekdays})
+        if not weekdays or any(day < 0 or day > 6 for day in weekdays):
+            raise ValueError("weekdays must contain values from 0 to 6")
+        result["weekdays"] = weekdays
+    if value.get("until") not in {None, ""}:
+        result["until"] = date.fromisoformat(str(value["until"])).isoformat()
+    return result
 
 
 def _task_values(task: dict[str, object]) -> tuple[object, ...]:
@@ -212,6 +225,7 @@ def _task_values(task: dict[str, object]) -> tuple[object, ...]:
         weekdays,
         task["created_at"],
         task["updated_at"],
+        recurrence.get("until") if isinstance(recurrence, dict) else None,
     )
 
 
@@ -224,6 +238,8 @@ def _task_from_row(row: sqlite3.Row) -> dict[str, object]:
             "frequency": "weekly",
             "weekdays": json.loads(row["recurrence_weekdays"] or "[]"),
         }
+    if recurrence is not None and row["recurrence_until"]:
+        recurrence["until"] = row["recurrence_until"]
     return {
         "id": row["task_id"],
         "title": row["title"],

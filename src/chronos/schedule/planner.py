@@ -167,6 +167,9 @@ def _occurrence_for_date(task: Task, target_date: date) -> Task | None:
         return task if base.date() == target_date else None
     if target_date < base.date():
         return None
+    until_value = task.recurrence.get("until")
+    if until_value is not None and target_date > date.fromisoformat(str(until_value)):
+        return None
     frequency = task.recurrence["frequency"]
     if frequency == "weekly" and target_date.weekday() not in {
         _python_weekday(int(day)) for day in task.recurrence.get("weekdays", [])

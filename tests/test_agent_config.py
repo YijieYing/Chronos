@@ -191,6 +191,57 @@ model = "deepseek-v4-flash"
 
         self.assertEqual(result.unresolved[0].field, "tasks[0].recurrence")
 
+    def test_interpretation_accepts_shared_field_level_recurrence_evidence(self) -> None:
+        task = (
+            '"title":"托福口语练习","title_source":"托福口语练习",'
+            '"duration_minutes":90,"duration_source":"七点半到九点",'
+            '"preferred_start":"2026-08-12T07:30:00+08:00",'
+            '"temporal_source":"七点半到九点","task_type":"research",'
+            '"recurrence":{"frequency":"daily","until":"2026-08-18"},'
+            '"recurrence_sources":{"frequency":["每天"],'
+            '"until":["到8.18为止"]},"fixed":true'
+        )
+        response = (
+            '{"intent":"create_schedule","tasks":[{'
+            + task
+            + "},{"
+            + task.replace("托福口语练习", "作文练习")
+            + '}],"unresolved":[],"assumptions":[]}'
+        )
+        parser = SemanticScheduleCommandParser(_FakeProvider(response))
+
+        result = parser.interpret(
+            "到8.18为止每天七点半到九点托福口语练习和作文练习",
+            datetime(2026, 8, 12, 6, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            [],
+        )
+
+        self.assertFalse(result.unresolved)
+        self.assertEqual(result.tasks[1].recurrence["until"], "2026-08-18")
+        self.assertEqual(
+            result.tasks[1].recurrence_sources["frequency"], ("每天",)
+        )
+
+    def test_interpretation_accepts_clock_only_provider_output(self) -> None:
+        response = (
+            '{"intent":"create_schedule","tasks":[{"title":"晨间计划",'
+            '"title_source":"晨间计划","duration_minutes":30,'
+            '"duration_source":"30分钟","preferred_start":"07:30:00",'
+            '"temporal_source":"七点半","task_type":"execution",'
+            '"recurrence":{"frequency":"daily"},'
+            '"recurrence_sources":{"frequency":["每天"]},"fixed":true}],'
+            '"unresolved":[],"assumptions":[]}'
+        )
+        parser = SemanticScheduleCommandParser(_FakeProvider(response))
+
+        result = parser.interpret(
+            "每天七点半晨间计划30分钟",
+            datetime(2026, 8, 12, 6, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            [],
+        )
+
+        self.assertEqual(result.tasks[0].preferred_start.isoformat(), "2026-08-12T07:30:00+08:00")
+
     def test_profile_is_read_only_when_fingerprint_changes(self) -> None:
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "agent.md"

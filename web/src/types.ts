@@ -8,8 +8,8 @@ export type TaskType =
   | "recovery";
 
 export type RecurrenceRule =
-  | { frequency: "daily" }
-  | { frequency: "weekly"; weekdays: number[] };
+  | { frequency: "daily"; until?: string }
+  | { frequency: "weekly"; weekdays: number[]; until?: string };
 
 export interface TimelineTask {
   id: string;

@@ -13,7 +13,7 @@ class ScheduleCreateCommand:
     title_source: str
     duration_source: str | None
     temporal_source: str | None
-    recurrence_source: str | None
+    recurrence_sources: dict[str, tuple[str, ...]]
 
     def to_dict(self) -> dict[str, object]:
         from chronos.schedule.service import _task_dict
@@ -26,7 +26,10 @@ class ScheduleCreateCommand:
                 "title": self.title_source,
                 "duration": self.duration_source,
                 "time": self.temporal_source,
-                "recurrence": self.recurrence_source,
+                "recurrence": {
+                    field: list(sources)
+                    for field, sources in self.recurrence_sources.items()
+                },
             },
         }
 

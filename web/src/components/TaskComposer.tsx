@@ -51,6 +51,7 @@ export function TaskComposer({
   const [fixed, setFixed] = useState(false);
   const [frequency, setFrequency] = useState<"none" | "daily" | "weekly">("none");
   const [weekdays, setWeekdays] = useState<number[]>([]);
+  const [recurrenceUntil, setRecurrenceUntil] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -67,6 +68,7 @@ export function TaskComposer({
           ? task.recurrence.weekdays
           : [],
       );
+      setRecurrenceUntil(task.recurrence?.until ?? "");
       return;
     }
     setTitle("");
@@ -77,6 +79,7 @@ export function TaskComposer({
     setFixed(false);
     setFrequency("none");
     setWeekdays([]);
+    setRecurrenceUntil("");
   }, [initialStart, open, task]);
 
   function submit(event: FormEvent) {
@@ -90,7 +93,7 @@ export function TaskComposer({
       spectrum,
       fixed,
       type: fixed ? "meeting" : typeForSpectrum(spectrum),
-      recurrence: recurrenceRule(frequency, weekdays),
+      recurrence: recurrenceRule(frequency, weekdays, recurrenceUntil),
     };
     if (task) onUpdate(task.id, input);
     else onCreate(input);
@@ -216,6 +219,17 @@ export function TaskComposer({
                   ))}
                 </div>
               )}
+              {frequency !== "none" && (
+                <label>
+                  REPEAT UNTIL / OPTIONAL
+                  <input
+                    type="date"
+                    min={start.slice(0, 10)}
+                    value={recurrenceUntil}
+                    onChange={(event) => setRecurrenceUntil(event.target.value)}
+                  />
+                </label>
+              )}
             </fieldset>
 
             <label>
@@ -291,10 +305,12 @@ const weekdaysInDisplayOrder = [
 function recurrenceRule(
   frequency: "none" | "daily" | "weekly",
   weekdays: number[],
+  until: string,
 ): RecurrenceRule | undefined {
-  if (frequency === "daily") return { frequency: "daily" };
+  const boundary = until ? { until } : {};
+  if (frequency === "daily") return { frequency: "daily", ...boundary };
   if (frequency === "weekly" && weekdays.length) {
-    return { frequency: "weekly", weekdays };
+    return { frequency: "weekly", weekdays, ...boundary };
   }
   return undefined;
 }
