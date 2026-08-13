@@ -598,6 +598,14 @@ class ProposalService:
         proposal = self.get(proposal_id)
         return self._repository.save({**proposal, "interaction_context": context})
 
+    def mark_stale(self, proposal_id: str) -> dict[str, object]:
+        proposal = self.get(proposal_id)
+        if proposal["status"] not in {"pending", "needs_clarification"}:
+            return proposal
+        return self._repository.save(
+            {**proposal, "status": "stale", "requires_confirmation": False}
+        )
+
     def accept(self, proposal_id: str) -> dict[str, object]:
         proposal = self.get(proposal_id)
         if proposal["status"] != "pending":

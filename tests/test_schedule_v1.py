@@ -207,7 +207,7 @@ class ScheduleV1Test(TestCase):
             proposal["proposal_id"],
         )
         operation = operation_store.get(str(proposal["proposal_id"]))
-        self.assertEqual(operation.state.value, "proposed")
+        self.assertEqual(operation.state.value, "proposed", operation.failure_reason)
         self.assertEqual(operation.compiled_operations[0].type, "create_task")
         self.assertFalse(operation.projections[0].metadata.get("legacy_adapter", False))
 
@@ -306,6 +306,65 @@ class ScheduleV1Test(TestCase):
         self.assertEqual(
             [entry.event_type.value for entry in chronos_log.list()[:2]],
             ["proposal_updated", "clarification_answered"],
+        )
+
+    def test_manual_overlapping_change_recompiles_proposal_in_place(self) -> None:
+        database = Path(self.temporary.name) / "chronos.sqlite3"
+        operation_store = OperationStore(SQLiteAgentOperationRepository(database))
+        chronos_log = ChronosLogService(SQLiteChronosLogRepository(database))
+        first = """{
+          "intent":"create_schedule","tasks":[{
+            "title":"阅读","title_source":"阅读","duration_minutes":60,
+            "duration_source":"一小时","preferred_start":"2026-08-13T19:00:00+08:00",
+            "temporal_source":"晚上七点","task_type":"research","recurrence":null,
+            "recurrence_sources":{},"fixed":true
+          }],"unresolved":[],"assumptions":[]
+        }"""
+        refreshed = first.replace("19:00:00", "20:00:00").replace("晚上七点", "晚上七点")
+        provider = _SequenceProvider(first, refreshed)
+        compiler = LLMChronosCompiler(
+            SemanticScheduleCommandParser(provider, fallback_on_error=False)
+        )
+        router = V1Router(
+            self.schedule,
+            self.proposals,
+            chronos_log=chronos_log,
+            operation_store=operation_store,
+            projections=ProjectionService(operation_store),
+            compiler=compiler,
+        )
+        context = {"current_time": 1_786_608_000_000, "selection": None}
+        _, created = router.dispatch(
+            "POST", "/api/v1/proposals",
+            {"text": "晚上七点安排一小时阅读", "interaction_context": context},
+        )
+        proposal = created["data"]
+        assert isinstance(proposal, dict)
+        operation_id = str(proposal["proposal_id"])
+        target = proposal["proposed_task"]
+        assert isinstance(target, dict)
+
+        router.dispatch(
+            "POST", "/api/v1/schedule/tasks",
+            {
+                "id": "manual-overlap",
+                "title": "手动任务",
+                "start": target["start"],
+                "end": target["end"],
+                "task_type": "execution",
+                "source": "user",
+                "fixed": True,
+            },
+        )
+        operation = operation_store.get(operation_id)
+        stored_proposal = self.proposals.get(operation_id)
+
+        self.assertEqual(operation.version, 3)
+        self.assertEqual(operation.state.value, "proposed", operation.failure_reason)
+        self.assertEqual(stored_proposal["status"], "pending")
+        self.assertEqual(
+            [entry.event_type.value for entry in chronos_log.list()[:2]],
+            ["proposal_updated", "operation_stale"],
         )
 
     def test_v1_router_creates_and_updates_an_independent_reminder(self) -> None:

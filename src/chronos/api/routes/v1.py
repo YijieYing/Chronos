@@ -15,8 +15,10 @@ from chronos.agent.log_service import ChronosLogService
 from chronos.agent.models import (
     InteractionContext,
     LogEventType,
+    OperationScope,
     OperationState,
     TimelineReference,
+    TimeRange,
 )
 from chronos.agent.projection_service import ProjectionService
 from chronos.agent.serialization import log_entry_to_dict, projection_to_dict
@@ -26,6 +28,7 @@ from chronos.api.contracts.schedule import scheduled_task_values
 from chronos.reminders.models import ReminderStatus
 from chronos.reminders.service import ReminderService, reminder_dict
 from chronos.schedule.agent_memory import AgentMemoryService
+from chronos.schedule.models import Task
 from chronos.schedule.proposals import ProposalService
 from chronos.schedule.service import ScheduleService, _plan_dict
 
@@ -134,7 +137,9 @@ class V1Router:
                     return HTTPStatus.OK, success({"reminders": self._reminders.list()})
                 if method == "POST":
                     reminder = self._reminders.create(**_reminder_values(payload))
-                    return HTTPStatus.CREATED, success(reminder_dict(reminder))
+                    stored = reminder_dict(reminder)
+                    self._timeline_changed(_reminder_scope(stored))
+                    return HTTPStatus.CREATED, success(stored)
             reminder_prefix = "/api/v1/reminders/"
             if path.startswith(reminder_prefix):
                 reminder_id = path.removeprefix(reminder_prefix)
@@ -144,8 +149,10 @@ class V1Router:
                     )
                     return HTTPStatus.OK, success(reminder_dict(reminder))
                 if method == "DELETE":
+                    previous = self._reminders.get(reminder_id)
                     if not self._reminders.delete(reminder_id):
                         raise KeyError(reminder_id)
+                    self._timeline_changed(_reminder_scope(previous))
                     return HTTPStatus.OK, success({"deleted": True, "id": reminder_id})
         if self._agent_memory is not None:
             if method == "GET" and path == "/api/v1/agent/imports":
@@ -197,6 +204,7 @@ class V1Router:
                 payload, self._schedule.settings()["timezone"], task_id=str(payload["id"])
             )
             task, plan = self._schedule.create_scheduled_task(**values)
+            self._timeline_changed(_task_scope(task))
             return HTTPStatus.CREATED, success(
                 {
                     "task_id": task.task_id,
@@ -213,7 +221,9 @@ class V1Router:
                 values = scheduled_task_values(
                     payload, self._schedule.settings()["timezone"]
                 )
+                previous = self._schedule.get_task(task_id)
                 task, plan = self._schedule.update_scheduled_task(task_id, **values)
+                self._timeline_changed(_task_scope(previous, task))
                 return HTTPStatus.OK, success(
                     {
                         "task_id": task.task_id,
@@ -222,8 +232,10 @@ class V1Router:
                     }
                 )
             if method == "DELETE":
+                previous = self._schedule.get_task(task_id)
                 if not self._schedule.delete_scheduled_task(task_id):
                     raise KeyError(task_id)
+                self._timeline_changed(_task_scope(previous))
                 return HTTPStatus.OK, success({"deleted": True, "task_id": task_id})
 
         if method == "GET" and path == "/api/v1/proposals":
@@ -261,8 +273,17 @@ class V1Router:
                 return HTTPStatus.OK, success(self._proposals.get(suffix))
             if method == "POST" and suffix.endswith("/accept"):
                 proposal_id = suffix.removesuffix("/accept")
+                changed_scope = (
+                    self._operation_store.get(proposal_id).scope
+                    if self._operation_store is not None
+                    else None
+                )
                 proposal = self._proposals.accept(proposal_id)
                 self._complete_operation(proposal_id)
+                if changed_scope is not None:
+                    self._timeline_changed(
+                        changed_scope, exclude_operation_id=proposal_id
+                    )
                 self._log_proposal_event(
                     proposal, LogEventType.OPERATION_COMPLETED, "已应用时间轴调整。"
                 )
@@ -277,7 +298,16 @@ class V1Router:
                 return HTTPStatus.OK, success(proposal)
             if method == "POST" and suffix.endswith("/restore"):
                 proposal_id = suffix.removesuffix("/restore")
+                changed_scope = (
+                    self._operation_store.get(proposal_id).scope
+                    if self._operation_store is not None
+                    else None
+                )
                 proposal = self._proposals.restore(proposal_id)
+                if changed_scope is not None:
+                    self._timeline_changed(
+                        changed_scope, exclude_operation_id=proposal_id
+                    )
                 self._log_proposal_event(
                     proposal, LogEventType.UNDO, "已恢复此次调整前的状态。"
                 )
@@ -344,6 +374,81 @@ class V1Router:
                 metadata={"operation_version": refreshed.version},
             )
         return proposal
+
+    def _timeline_changed(
+        self, scope: OperationScope, *, exclude_operation_id: str | None = None
+    ) -> None:
+        if self._operation_store is None:
+            return
+        stale = self._operation_store.mark_conflicting_stale(
+            scope, exclude_operation_id=exclude_operation_id
+        )
+        for operation in stale:
+            self._proposals.mark_stale(operation.id)
+            if self._chronos_log is not None:
+                self._chronos_log.append(
+                    LogEventType.OPERATION_STALE,
+                    "相关时间轴已改变，旧提案已失效，正在重新编译。",
+                    operation_id=operation.id,
+                    references=operation.references,
+                    metadata={"operation_state": "stale"},
+                )
+            try:
+                self._recompile_stale(operation)
+            except Exception as error:
+                failed = self._operation_store.transition(
+                    operation.id,
+                    OperationState.FAILED,
+                    expected_version=operation.version,
+                    failure_reason=str(error),
+                )
+                if self._chronos_log is not None:
+                    self._chronos_log.append(
+                        LogEventType.OPERATION_FAILED,
+                        "时间轴修改已保存，但相关提案重新编译失败。",
+                        operation_id=failed.id,
+                        references=failed.references,
+                        metadata={"failure_reason": str(error)},
+                    )
+
+    def _recompile_stale(self, operation) -> None:
+        if self._semantic_compiler is None or self._operation_store is None:
+            return
+        proposal = self._proposals.get(operation.id)
+        context = _interaction_context(proposal.get("interaction_context"))
+        compiled = self._semantic_compiler.compile(replace(
+            context,
+            current_time=max(
+                context.current_time,
+                int(operation.updated_at.timestamp() * 1000) + 1,
+            ),
+            user_input=operation.intent.source_text,
+            timeline_context={
+                "tasks": tuple(self._schedule.list_tasks()),
+                "timezone": self._schedule.settings()["timezone"],
+                "operation_id": operation.id,
+                "operation_version": operation.version + 1,
+                "operation_created_at": operation.created_at,
+            },
+        ))
+        refreshed_proposal = self._proposals.create_from_compiler(compiled)
+        self._proposals.attach_interaction_context(
+            operation.id, _interaction_context_dict(context)
+        )
+        self._operation_store.save_snapshot(
+            compiled.operation, expected_version=operation.version
+        )
+        if self._chronos_log is not None:
+            self._chronos_log.append(
+                LogEventType.PROPOSAL_UPDATED,
+                compiled.message,
+                operation_id=operation.id,
+                references=compiled.operation.references,
+                metadata={
+                    "operation_version": compiled.operation.version,
+                    "proposal_status": refreshed_proposal["status"],
+                },
+            )
 
     def _log_proposal_created(self, proposal: dict[str, object], text: str) -> None:
         if self._chronos_log is None:
@@ -465,6 +570,37 @@ def _reminder_values(payload: dict[str, object]) -> dict[str, object]:
         "priority": int(payload.get("priority", 3)),
         "source": str(payload.get("source", "user")),
     }
+
+
+def _task_scope(*tasks: Task) -> OperationScope:
+    ranges = tuple(
+        TimeRange(
+            int(task.preferred_start.timestamp() * 1000),
+            int(task.preferred_start.timestamp() * 1000)
+            + task.estimated_minutes * 60_000,
+        )
+        for task in tasks
+        if task.preferred_start is not None
+    )
+    return OperationScope(
+        task_ids=tuple(dict.fromkeys(task.task_id for task in tasks)),
+        time_ranges=ranges,
+    )
+
+
+def _reminder_scope(reminder: dict[str, object]) -> OperationScope:
+    trigger = reminder.get("trigger")
+    ranges = ()
+    if isinstance(trigger, dict):
+        if trigger.get("type") == "time":
+            at = int(trigger["at"])
+            ranges = (TimeRange(at, at + 60_000),)
+        elif trigger.get("type") == "window":
+            ranges = (TimeRange(int(trigger["start"]), int(trigger["end"])),)
+    return OperationScope(
+        reminder_ids=(str(reminder["id"]),),
+        time_ranges=ranges,
+    )
 
 
 def _timeline_references(value: object) -> tuple[TimelineReference, ...]:

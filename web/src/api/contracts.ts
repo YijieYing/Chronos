@@ -31,7 +31,7 @@ export interface TimelineTaskPayload {
 
 export interface ProposalPayload {
   proposal_id: string;
-  status: "pending" | "accepted" | "rejected" | "restored" | "informational" | "needs_clarification";
+  status: "pending" | "accepted" | "rejected" | "restored" | "informational" | "needs_clarification" | "stale";
   requires_confirmation?: boolean;
   request_text: string;
   proposed_task: TimelineTaskPayload | null;

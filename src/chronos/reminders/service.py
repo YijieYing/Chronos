@@ -15,6 +15,12 @@ class ReminderService:
     def list(self) -> list[dict[str, object]]:
         return [reminder_dict(item) for item in self._repository.list()]
 
+    def get(self, reminder_id: str) -> dict[str, object]:
+        reminder = self._repository.get(reminder_id)
+        if reminder is None:
+            raise KeyError(reminder_id)
+        return reminder_dict(reminder)
+
     def create(
         self,
         *,

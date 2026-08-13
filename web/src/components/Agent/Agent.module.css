@@ -208,6 +208,37 @@
   line-height: 1.45;
 }
 
+.proposalChanges {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0;
+}
+
+.proposalChanges code {
+  color: #52675e;
+  font: 550 10px/1.45 "SFMono-Regular", Consolas, monospace;
+}
+
+.proposalActions {
+  display: flex;
+  gap: 7px;
+}
+
+.proposalActions button {
+  padding: 7px 10px;
+  border: 1px solid #bfd0c8;
+  border-radius: 7px;
+  background: transparent;
+  color: #45685a;
+  font: 700 9px/1 "SFMono-Regular", Consolas, monospace;
+}
+
+.proposalActions button:first-child {
+  border-color: #376d57;
+  background: #376d57;
+  color: white;
+}
+
 .logDrawer {
   position: fixed;
   z-index: 30;
@@ -294,6 +325,7 @@
 
 .logMeta span[data-event="operation_rejected"],
 .logMeta span[data-event="operation_failed"],
+.logMeta span[data-event="operation_stale"],
 .logMeta span[data-event="undo"],
 .logMeta span[data-event="restore"] {
   color: #7e6754;

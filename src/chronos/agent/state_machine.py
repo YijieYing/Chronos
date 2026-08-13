@@ -59,6 +59,10 @@ _TRANSITIONS = {
     },
     OperationState.STALE: {
         OperationState.INTERPRETING,
+        OperationState.AWAITING_CLARIFICATION,
+        OperationState.PROPOSED,
+        OperationState.COMPLETED,
+        OperationState.FAILED,
         OperationState.CANCELLED,
     },
 }

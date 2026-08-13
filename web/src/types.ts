@@ -117,6 +117,7 @@ export type ChronosLogEventType =
   | "proposal_created" | "proposal_updated" | "operation_approved"
   | "operation_executed" | "operation_completed" | "operation_rejected"
   | "operation_failed" | "manual_task_move" | "manual_task_resize"
+  | "operation_stale"
   | "manual_reminder_move" | "undo" | "restore";
 
 export interface ChronosLogEntry {

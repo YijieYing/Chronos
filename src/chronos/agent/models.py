@@ -50,6 +50,7 @@ class LogEventType(StrEnum):
     OPERATION_COMPLETED = "operation_completed"
     OPERATION_REJECTED = "operation_rejected"
     OPERATION_FAILED = "operation_failed"
+    OPERATION_STALE = "operation_stale"
     MANUAL_TASK_MOVE = "manual_task_move"
     MANUAL_TASK_RESIZE = "manual_task_resize"
     MANUAL_REMINDER_MOVE = "manual_reminder_move"

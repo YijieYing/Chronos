@@ -221,6 +221,14 @@ parallel clarifications, while Expanded Log lists every one independently. Answe
 complete versioned snapshot. The answer and resulting clarification/proposal transition are both
 appended to Chronos Log. Proposal Apply/Reject presentation remains Phase 9.
 
+Phase 9 makes Chronos Log the sole Proposal control view: textual changes and Apply/Reject live in
+the Log, while Timeline retains only the spatial ghost from the shared Operation snapshot. All
+Schedule task and Reminder writes now report an `OperationScope`; overlapping pending Operations
+transition to `stale`, their ghosts disappear, and semantic Operations are recompiled in place with
+the same ID and a new version. The Log records both the stale event and the replacement proposal.
+If recompilation fails, the committed manual edit is preserved and the Operation becomes an
+actionable failure instead of silently restoring an obsolete ghost.
+
 ### Phases 10–11 — Autonomy and Runtime
 
 Move validation, constraint checks, autonomy gating, execution, transaction capture, rollback, and

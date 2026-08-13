@@ -2,6 +2,7 @@ import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import type {
   ChronosLogEntry,
+  AgentCommand,
   PendingAgentOperation,
   TimelineReference,
   TimelineSelection,
@@ -13,6 +14,7 @@ interface ChronosLogProps {
   entries: ChronosLogEntry[];
   pendingCount: number;
   pendingOperations: PendingAgentOperation[];
+  proposals: AgentCommand[];
   selection: TimelineSelection | null;
   onOpen: () => void;
   onClose: () => void;
@@ -23,6 +25,7 @@ interface ChronosLogProps {
     answer: string,
     selection: TimelineSelection | null,
   ) => Promise<void>;
+  onResolve: (operationId: string, accepted: boolean) => Promise<void>;
 }
 
 const formatTime = (value: number) =>
@@ -36,12 +39,14 @@ export function ChronosLog({
   entries,
   pendingCount,
   pendingOperations,
+  proposals,
   selection,
   onOpen,
   onClose,
   onRestore,
   onReference,
   onAnswer,
+  onResolve,
 }: ChronosLogProps) {
   const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
   const [answer, setAnswer] = useState("");
@@ -144,6 +149,19 @@ export function ChronosLog({
                     setActiveOperationId(operation.id);
                     onClose();
                   }}>ANSWER</button>
+                </article>
+              ))}
+              {proposals.filter((proposal) => proposal.canResolve).map((proposal) => (
+                <article className={styles.pendingOperation} key={proposal.id}>
+                  <span>CHRONOS · PROPOSAL</span>
+                  <p>{proposal.title}</p>
+                  <div className={styles.proposalChanges}>
+                    {proposal.lines.map((line) => <code key={line}>{line}</code>)}
+                  </div>
+                  <div className={styles.proposalActions}>
+                    <button onClick={() => void onResolve(proposal.id, true)}>APPLY</button>
+                    <button onClick={() => void onResolve(proposal.id, false)}>REJECT</button>
+                  </div>
                 </article>
               ))}
               {entries.length === 0 ? (

@@ -8,7 +8,6 @@ import {
 } from "react";
 import { motion } from "framer-motion";
 import type {
-  AgentCommand,
   TemporalIntelligence,
   TimelineTask,
   Reminder,
@@ -19,7 +18,6 @@ import { CurrentStateCapsule } from "./CurrentStateCapsule";
 import { CognitiveLoadTrack } from "./CognitiveLoadTrack";
 import { TaskWave } from "./TaskWave";
 import { TimeCursor } from "./TimeCursor";
-import { TimelineCommand } from "../Agent/TimelineCommand";
 import styles from "./Timeline.module.css";
 import { ReminderBeacon } from "./ReminderBeacon";
 import { ProjectionLayer } from "./ProjectionLayer";
@@ -34,7 +32,6 @@ interface WaveTimelineProps {
   tasks: TimelineTask[];
   reminders: Reminder[];
   intelligence: TemporalIntelligence;
-  commands: AgentCommand[];
   projections: TimelineProjection[];
   focusTarget: number | null;
   selection: TimelineSelection | null;
@@ -42,7 +39,6 @@ interface WaveTimelineProps {
   onCreateAt: (time: number) => void;
   onSelect: (selection: TimelineSelection | null) => void;
   onEditTask: (task: TimelineTask) => void;
-  onResolveCommand: (id: string, accepted: boolean) => void;
 }
 
 export function WaveTimeline({
@@ -50,7 +46,6 @@ export function WaveTimeline({
   tasks,
   reminders,
   intelligence,
-  commands,
   projections,
   focusTarget,
   selection,
@@ -58,7 +53,6 @@ export function WaveTimeline({
   onCreateAt,
   onSelect,
   onEditTask,
-  onResolveCommand,
 }: WaveTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const clickTimer = useRef<number | null>(null);
@@ -334,16 +328,6 @@ export function WaveTimeline({
         intelligence={intelligence}
         activeTask={activeTask}
       />
-      {commands
-        .filter((command) => command.cursorTime >= visibleStart && command.cursorTime <= visibleEnd)
-        .map((command) => (
-          <TimelineCommand
-            key={command.id}
-            command={command}
-            x={xFor(command.cursorTime)}
-            onResolve={onResolveCommand}
-          />
-        ))}
       <div className={styles.timelineLegend}>
         <span><i className={styles.plannedLegend} /> Planned</span>
         <span><i className={styles.predictedLegend} /> Predicted extension</span>

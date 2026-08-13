@@ -193,7 +193,6 @@ export default function App() {
         tasks={predictedTasks}
         reminders={timeline.reminders}
         intelligence={intelligence}
-        commands={timeline.commands}
         projections={projectionStore.projections}
         focusTarget={timeline.focusTarget}
         selection={timeline.selection}
@@ -204,7 +203,6 @@ export default function App() {
           if (selection?.type !== "reminder") setExpandedReminderId(null);
         }}
         onEditTask={openTaskEditor}
-        onResolveCommand={timeline.resolveCommand}
       />
 
       <AgentInput
@@ -247,12 +245,14 @@ export default function App() {
         entries={timeline.logs}
         pendingCount={timeline.pendingOperationCount}
         pendingOperations={timeline.pendingOperations}
+        proposals={timeline.commands}
         selection={timeline.selection}
         onOpen={() => setLogOpen(true)}
         onClose={() => setLogOpen(false)}
         onRestore={timeline.restoreLog}
         onReference={focusReference}
         onAnswer={timeline.answerOperation}
+        onResolve={timeline.resolveCommand}
       />
       <MemorySync open={memoryOpen} onClose={() => setMemoryOpen(false)} />
     </main>

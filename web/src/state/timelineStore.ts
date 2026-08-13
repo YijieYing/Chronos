@@ -121,6 +121,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
       .then((storedTasks) => {
         setTasks(storedTasks);
         confirmStorage();
+        void refreshOperations();
         recordLogBestEffort({
           eventType: "operation_completed",
           message: `Created ${task.title} at ${formatTime(task.start)}`,
@@ -157,6 +158,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
       .then((storedTasks) => {
         setTasks(storedTasks);
         confirmStorage();
+        void refreshOperations();
         recordLogBestEffort({
           eventType: start === previous.start ? "manual_task_resize" : "manual_task_move",
           message: `${previous.title}: ${formatTime(previous.start)}–${formatTime(previous.end)} → ${formatTime(start)}–${formatTime(end)}`,
@@ -220,6 +222,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
       .then((storedTasks) => {
         setTasks(storedTasks);
         confirmStorage();
+        void refreshOperations();
         recordLogBestEffort({
           eventType: "operation_completed",
           message: `Updated ${previous.title} → ${updated.title}`,
@@ -257,6 +260,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
       .then((storedTasks) => {
         setTasks(storedTasks);
         confirmStorage();
+        void refreshOperations();
         recordLogBestEffort({
           eventType: "operation_completed",
           message: `Deleted ${previous.title}`,
@@ -284,6 +288,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
       .then((stored) => {
         setReminders((current) => current.map((item) => item.id === stored.id ? stored : item));
         confirmStorage();
+        void refreshOperations();
         recordLogBestEffort({
           eventType: "operation_completed",
           message: `Created reminder ${stored.title}`,
@@ -342,6 +347,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
       }
       await refreshLog();
       await onOperationsChanged?.();
+      setCommands((current) => current.filter((item) => item.id !== id));
       confirmStorage();
     } catch (error) {
       setCommands((current) =>
@@ -438,6 +444,15 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
     setLogs(result.entries);
     setPendingOperationCount(result.pendingCount);
     setPendingOperations(result.pendingOperations);
+  }
+
+  async function refreshOperations() {
+    await Promise.all([refreshLog(), onOperationsChanged?.()]);
+    const proposals = await loadProposals();
+    setCommands(proposals
+      .filter((proposal) => proposal.status === "pending"
+        || proposal.status === "needs_clarification")
+      .map(proposalToCommand));
   }
 
   function reportStorageError(error: unknown) {
