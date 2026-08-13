@@ -76,6 +76,39 @@
   gap: 12px;
 }
 
+.twoColumnsEven {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.objectTypeSwitch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  padding: 4px;
+  border: 1px solid #d8e2dd;
+  border-radius: 11px;
+  background: #f1f5f2;
+}
+
+.objectTypeSwitch button {
+  padding: 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #718078;
+  font: 700 9px/1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.08em;
+}
+
+.objectTypeSwitch button[data-active="true"] {
+  border-color: #cbdcd3;
+  background: white;
+  color: #34765a;
+  box-shadow: 0 3px 10px rgba(46, 76, 62, 0.08);
+}
+
 .rangeLabel {
   display: flex;
   align-items: center;

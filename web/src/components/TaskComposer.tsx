@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import type {
   NewTaskInput,
   RecurrenceRule,
+  Reminder,
   TaskType,
   TimelineTask,
 } from "../types";
@@ -14,8 +15,11 @@ interface TaskComposerProps {
   open: boolean;
   initialStart: number;
   task?: TimelineTask | null;
+  creationMode: "task" | "reminder";
+  onCreationModeChange: (mode: "task" | "reminder") => void;
   onClose: () => void;
   onCreate: (input: NewTaskInput) => void;
+  onCreateReminder: (reminder: Reminder) => void;
   onUpdate: (taskId: string, input: NewTaskInput) => void;
   onDelete: (taskId: string) => void;
 }
@@ -38,8 +42,11 @@ export function TaskComposer({
   open,
   initialStart,
   task,
+  creationMode,
+  onCreationModeChange,
   onClose,
   onCreate,
+  onCreateReminder,
   onUpdate,
   onDelete,
 }: TaskComposerProps) {
@@ -52,6 +59,9 @@ export function TaskComposer({
   const [frequency, setFrequency] = useState<"none" | "daily" | "weekly">("none");
   const [weekdays, setWeekdays] = useState<number[]>([]);
   const [recurrenceUntil, setRecurrenceUntil] = useState("");
+  const [reminderTrigger, setReminderTrigger] = useState<"time" | "window">("time");
+  const [reminderEnd, setReminderEnd] = useState(localDateTime(initialStart + 3 * 3_600_000));
+  const [reminderDelivery, setReminderDelivery] = useState<"exact" | "context-aware">("exact");
 
   useEffect(() => {
     if (!open) return;
@@ -80,11 +90,37 @@ export function TaskComposer({
     setFrequency("none");
     setWeekdays([]);
     setRecurrenceUntil("");
+    setReminderTrigger("time");
+    setReminderEnd(localDateTime(initialStart + 3 * 3_600_000));
+    setReminderDelivery("exact");
   }, [initialStart, open, task]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
     if (!title.trim()) return;
+    if (!task && creationMode === "reminder") {
+      const reminderStart = new Date(start).getTime();
+      const reminderEndTime = new Date(reminderEnd).getTime();
+      if (reminderTrigger === "window" && reminderEndTime <= reminderStart) return;
+      onCreateReminder({
+        id: crypto.randomUUID(),
+        title: title.trim(),
+        trigger: reminderTrigger === "time"
+          ? { type: "time", at: reminderStart }
+          : {
+              type: "window",
+              start: reminderStart,
+              end: reminderEndTime,
+            },
+        delivery: reminderTrigger === "time" ? "exact" : reminderDelivery,
+        priority: 3,
+        status: "pending",
+        source: "user",
+        createdAt: Date.now(),
+      });
+      onClose();
+      return;
+    }
     const input: NewTaskInput = {
       title: title.trim(),
       start: new Date(start).getTime(),
@@ -122,20 +158,56 @@ export function TaskComposer({
             <header>
               <div>
                 <span>{task ? "EDIT TIMELINE OBJECT" : "NEW TIMELINE OBJECT"}</span>
-                <h2>{task ? "编辑任务" : "创建任务"}</h2>
+                <h2>{task ? "编辑任务" : creationMode === "task" ? "创建任务" : "创建提醒"}</h2>
               </div>
               <button type="button" onClick={onClose}>×</button>
             </header>
 
+            {!task && (
+              <div className={styles.objectTypeSwitch} aria-label="Timeline object type">
+                <button type="button" data-active={creationMode === "task"} onClick={() => onCreationModeChange("task")}>＋ TASK</button>
+                <button type="button" data-active={creationMode === "reminder"} onClick={() => onCreationModeChange("reminder")}>◇ REMINDER</button>
+              </div>
+            )}
+
             <label>
-              TASK
+              {creationMode === "reminder" && !task ? "REMINDER" : "TASK"}
               <input
                 autoFocus
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
-                placeholder="任务名称"
+                placeholder={creationMode === "reminder" && !task ? "提醒内容" : "任务名称"}
               />
             </label>
+
+            {!task && creationMode === "reminder" ? (
+              <>
+                <div className={styles.objectTypeSwitch} aria-label="Reminder trigger type">
+                  <button type="button" data-active={reminderTrigger === "time"} onClick={() => setReminderTrigger("time")}>POINT</button>
+                  <button type="button" data-active={reminderTrigger === "window"} onClick={() => setReminderTrigger("window")}>WINDOW</button>
+                </div>
+                <div className={reminderTrigger === "window" ? styles.twoColumnsEven : undefined}>
+                  <label>
+                    {reminderTrigger === "time" ? "AT" : "WINDOW START"}
+                    <input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} />
+                  </label>
+                  {reminderTrigger === "window" && (
+                    <label>
+                      WINDOW END
+                      <input type="datetime-local" min={start} value={reminderEnd} onChange={(event) => setReminderEnd(event.target.value)} />
+                    </label>
+                  )}
+                </div>
+                {reminderTrigger === "window" && (
+                  <label className={styles.fixedToggle}>
+                    <input type="checkbox" checked={reminderDelivery === "context-aware"} onChange={(event) => setReminderDelivery(event.target.checked ? "context-aware" : "exact")} />
+                    <span><b>Context-aware delivery</b>记录择机提醒意图；Monitor 自动投递将在下一阶段启用</span>
+                  </label>
+                )}
+                <button className={styles.createButton} type="submit">PLACE BEACON</button>
+              </>
+            ) : (
+            <>
 
             <div className={styles.twoColumns}>
               <label>
@@ -284,6 +356,8 @@ export function TaskComposer({
               <button className={styles.createButton} type="submit">
                 ADD TO TIMELINE
               </button>
+            )}
+            </>
             )}
           </motion.form>
         </>

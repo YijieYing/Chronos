@@ -3,7 +3,6 @@ import { AgentInput } from "./components/Agent/AgentInput";
 import { ChronosLog } from "./components/Agent/ChronosLog";
 import { MemorySync } from "./components/Agent/MemorySync";
 import { TaskComposer } from "./components/TaskComposer";
-import { ReminderComposer } from "./components/ReminderComposer";
 import { OverviewMap } from "./components/Overview/OverviewMap";
 import { WaveTimeline } from "./components/Timeline/WaveTimeline";
 import {
@@ -26,9 +25,7 @@ export default function App() {
   const liveMonitor = useLiveMonitor();
   const [now, setNow] = useState(Date.now());
   const [composerOpen, setComposerOpen] = useState(false);
-  const [reminderOpen, setReminderOpen] = useState(false);
-  const [reminderStart, setReminderStart] = useState(Date.now());
-  const [creationChoice, setCreationChoice] = useState<number | null>(null);
+  const [creationMode, setCreationMode] = useState<"task" | "reminder">("task");
   const [composerStart, setComposerStart] = useState(Date.now());
   const [editingTask, setEditingTask] = useState<TimelineTask | null>(null);
   const [logOpen, setLogOpen] = useState(false);
@@ -61,16 +58,17 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, []);
 
-  function openComposer(time = Date.now()) {
+  function openComposer(time = Date.now(), mode: "task" | "reminder" = "task") {
     setEditingTask(null);
     setComposerStart(time);
+    setCreationMode(mode);
     setComposerOpen(true);
   }
-  function chooseCreation(time: number) { setCreationChoice(time); }
 
   function openTaskEditor(task: TimelineTask) {
     setEditingTask(task);
     setComposerStart(task.start);
+    setCreationMode("task");
     setComposerOpen(true);
   }
 
@@ -109,10 +107,7 @@ export default function App() {
           <button onClick={() => setOverviewOpen(true)}>OVERVIEW</button>
           <button onClick={() => setMemoryOpen(true)}>MEMORY SYNC</button>
           <button onClick={() => openComposer()}>＋ TASK</button>
-          <button onClick={() => {
-            setReminderStart(Date.now());
-            setReminderOpen(true);
-          }}>◇ REMINDER</button>
+          <button onClick={() => openComposer(Date.now(), "reminder")}>◇ REMINDER</button>
           <button onClick={() => setLogOpen(true)}>
             OPEN CHRONOS LOG
             {timeline.logs.length > 0 && <em>{timeline.logs.length}</em>}
@@ -144,7 +139,7 @@ export default function App() {
         intelligence={intelligence}
         commands={timeline.commands}
         focusTarget={timeline.focusTarget}
-        onCreateAt={chooseCreation}
+        onCreateAt={(time) => openComposer(time)}
         onEditTask={openTaskEditor}
         onResolveCommand={timeline.resolveCommand}
       />
@@ -165,19 +160,17 @@ export default function App() {
         open={composerOpen}
         initialStart={composerStart}
         task={editingTask}
+        creationMode={creationMode}
+        onCreationModeChange={setCreationMode}
         onClose={() => {
           setComposerOpen(false);
           setEditingTask(null);
         }}
         onCreate={timeline.addTask}
+        onCreateReminder={timeline.addReminder}
         onUpdate={timeline.updateTask}
         onDelete={timeline.deleteTask}
       />
-      {creationChoice !== null && <div className={styles.creationChoice}>
-        <button onClick={() => { openComposer(creationChoice); setCreationChoice(null); }}>＋ Task</button>
-        <button onClick={() => { setReminderStart(creationChoice); setReminderOpen(true); setCreationChoice(null); }}>◇ Reminder</button>
-      </div>}
-      <ReminderComposer open={reminderOpen} initialTime={reminderStart} onClose={() => setReminderOpen(false)} onCreate={timeline.addReminder} />
       <ChronosLog
         open={logOpen}
         entries={timeline.logs}
