@@ -11,6 +11,9 @@ Implementation progress:
 - Phase 3 completed: append-only Chronos Log persistence, proposal/manual event ingestion,
   Operation-linked pending counts, legacy proposal history import, TimelineReference navigation,
   and Collapsed/Peek/Expanded frontend states.
+- Phase 4 completed: one Task/Reminder/TimeRange selection union, object selection separated from
+  properties, empty-field press-drag range selection, larger Reminder hit targets, contextual
+  Command Bar state, and validated InteractionContext transport to proposal persistence and Log.
 - Operation/Log foundations now bridge the legacy proposal workflow; Compiler and Runtime wiring
   still begins in later phases.
 
@@ -156,6 +159,13 @@ Introduce one selection union in the frontend. Change Task/Reminder clicks from 
 opening to selection, with explicit properties/edit actions. Add press-drag empty-range selection and
 send the selected reference in InteractionContext. Keep single-click empty creation only when no drag
 threshold is crossed.
+
+Implemented with one selection in `useTimelineStore`. Task single-click selects and double-click
+opens properties; Reminder single-click selects and its contextual Properties action expands details.
+An empty-field pointer gesture becomes a range after a six-pixel threshold, otherwise it retains the
+existing single-click composer behavior. Selection is serialized as validated InteractionContext and
+stored with the legacy proposal so the later Compiler phase can consume it without changing this UI
+contract. Semantic reference resolution itself remains Phase 6/7 work.
 
 ### Phase 5 — Timeline projection layer
 

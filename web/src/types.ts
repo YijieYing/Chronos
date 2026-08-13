@@ -98,6 +98,8 @@ export type TimelineReference =
   | { type: "reminder"; id: string; start?: never; end?: never }
   | { type: "time_range"; start: number; end: number; id?: never };
 
+export type TimelineSelection = TimelineReference;
+
 export type ChronosLogEventType =
   | "user_prompt" | "agent_message" | "operation_created"
   | "clarification_requested" | "clarification_answered"

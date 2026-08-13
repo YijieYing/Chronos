@@ -1,4 +1,4 @@
-import type { TimelineTask } from "../types";
+import type { TimelineSelection, TimelineTask } from "../types";
 import { apiRequest } from "./client";
 import type { ProposalPayload, TimelineTaskPayload } from "./contracts";
 
@@ -21,11 +21,20 @@ export interface ScheduleProposal {
   reminderDrafts: NonNullable<ProposalPayload["reminder_drafts"]>;
 }
 
-export async function createProposal(text: string): Promise<ScheduleProposal> {
+export async function createProposal(
+  text: string,
+  selection: TimelineSelection | null,
+): Promise<ScheduleProposal> {
   const payload = await apiRequest<ProposalPayload>("/api/v1/proposals", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({
+      text,
+      interaction_context: {
+        current_time: Date.now(),
+        selection,
+      },
+    }),
   });
   return fromProposal(payload);
 }

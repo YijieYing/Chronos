@@ -73,6 +73,19 @@ def proposal_references(
         reminder = draft.get("reminder") if isinstance(draft, dict) else None
         if isinstance(reminder, dict) and reminder.get("id"):
             add(TimelineReference("reminder", id=str(reminder["id"])))
+    context = proposal.get("interaction_context")
+    selection = context.get("selection") if isinstance(context, dict) else None
+    if isinstance(selection, dict):
+        if selection.get("type") == "time_range":
+            add(
+                TimelineReference(
+                    "time_range",
+                    start=int(selection["start"]),
+                    end=int(selection["end"]),
+                )
+            )
+        elif selection.get("type") in {"task", "reminder"}:
+            add(TimelineReference(str(selection["type"]), id=str(selection["id"])))
     return tuple(references)
 
 

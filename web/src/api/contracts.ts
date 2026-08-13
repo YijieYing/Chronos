@@ -1,4 +1,4 @@
-import type { TimelineTask } from "../types";
+import type { TimelineSelection, TimelineTask } from "../types";
 
 export interface ApiEnvelope<T> {
   schema_version: number;
@@ -75,4 +75,8 @@ export interface ProposalPayload {
   }>;
   created_at: string;
   updated_at: string;
+  interaction_context?: {
+    current_time: number;
+    selection: TimelineSelection | null;
+  };
 }

@@ -18,6 +18,7 @@ import type {
   NewTaskInput,
   TimelineTask,
   Reminder,
+  TimelineSelection,
 } from "../types";
 import { createReminder, deleteReminder, loadReminders } from "../api/reminders";
 import { appendChronosLog, loadChronosLog } from "../api/chronosLog";
@@ -30,6 +31,7 @@ export function useTimelineStore() {
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [logs, setLogs] = useState<ChronosLogEntry[]>([]);
   const [pendingOperationCount, setPendingOperationCount] = useState(0);
+  const [selection, setSelection] = useState<TimelineSelection | null>(null);
   const [focusTarget, setFocusTarget] = useState<number | null>(null);
   const [storageStatus, setStorageStatus] =
     useState<"loading" | "ready" | "error">("loading");
@@ -79,6 +81,21 @@ export function useTimelineStore() {
     () => tasks.slice().sort((left, right) => left.start - right.start),
     [tasks],
   );
+
+  useEffect(() => {
+    if (!selection || storageStatus === "loading") return;
+    if (selection.type === "task") {
+      const exists = tasks.some(
+        (task) => task.id === selection.id || task.seriesId === selection.id,
+      );
+      if (!exists) setSelection(null);
+    } else if (
+      selection.type === "reminder"
+      && !reminders.some((reminder) => reminder.id === selection.id)
+    ) {
+      setSelection(null);
+    }
+  }, [reminders, selection, storageStatus, tasks]);
 
   function addTask(input: NewTaskInput, source: TimelineTask["source"] = "user") {
     const task: TimelineTask = {
@@ -278,7 +295,7 @@ export function useTimelineStore() {
 
   async function runAgent(request: string) {
     try {
-      const proposal = await createProposal(request);
+      const proposal = await createProposal(request, selection);
       if (
         proposal.status === "pending" ||
         proposal.status === "needs_clarification"
@@ -413,6 +430,7 @@ export function useTimelineStore() {
     commands,
     logs,
     pendingOperationCount,
+    selection,
     storageStatus,
     storageError,
     focusTarget,
@@ -422,6 +440,8 @@ export function useTimelineStore() {
     updateTask,
     deleteTask,
     focusTime,
+    selectTimeline: setSelection,
+    clearSelection: () => setSelection(null),
     runAgent,
     resolveCommand,
     restoreLog,

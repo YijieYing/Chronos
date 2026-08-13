@@ -127,6 +127,57 @@ class ScheduleV1Test(TestCase):
         )
         self.assertEqual(data["pending_count"], 0)
 
+    def test_interaction_context_selection_is_validated_persisted_and_logged(self) -> None:
+        database = Path(self.temporary.name) / "chronos.sqlite3"
+        chronos_log = ChronosLogService(SQLiteChronosLogRepository(database))
+        router = V1Router(self.schedule, self.proposals, chronos_log=chronos_log)
+        context = {
+            "current_time": 1_786_608_000_000,
+            "selection": {
+                "type": "time_range",
+                "start": 1_786_608_000_000,
+                "end": 1_786_615_200_000,
+            },
+        }
+
+        _, envelope = router.dispatch(
+            "POST",
+            "/api/v1/proposals",
+            {"text": "这里安排30分钟阅读", "interaction_context": context},
+        )
+        proposal = envelope["data"]
+        assert isinstance(proposal, dict)
+
+        self.assertEqual(proposal["interaction_context"], context)
+        entries = chronos_log.list()
+        self.assertTrue(
+            any(
+                reference.type == "time_range"
+                and reference.start == context["selection"]["start"]
+                and reference.end == context["selection"]["end"]
+                for entry in entries
+                for reference in entry.references
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "positive duration"):
+            router.dispatch(
+                "POST",
+                "/api/v1/proposals",
+                {
+                    "text": "安排30分钟阅读",
+                    "interaction_context": {
+                        "current_time": context["current_time"],
+                        "selection": {
+                            "type": "time_range",
+                            "start": 20,
+                            "end": 10,
+                        },
+                    },
+                },
+            )
+        self.assertEqual(len(self.proposals.list()), 1)
+
     def test_v1_router_creates_and_updates_an_independent_reminder(self) -> None:
         database = Path(self.temporary.name) / "chronos.sqlite3"
         reminders = ReminderService(SQLiteReminderRepository(database))

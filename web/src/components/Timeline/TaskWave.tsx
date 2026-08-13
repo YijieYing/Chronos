@@ -15,6 +15,8 @@ interface TaskWaveProps {
   xPredictedEnd: number;
   baseline: number;
   labelAbove: boolean;
+  selected: boolean;
+  onSelect: (task: TimelineTask) => void;
   onEdit: (task: TimelineTask) => void;
 }
 
@@ -25,6 +27,8 @@ export function TaskWave({
   xPredictedEnd,
   baseline,
   labelAbove,
+  selected,
+  onSelect,
   onEdit,
 }: TaskWaveProps) {
   const amplitude = 16 + task.intensity * 42;
@@ -43,14 +47,30 @@ export function TaskWave({
 
   return (
     <g
+      data-timeline-object="task"
+      data-selected={selected}
       role="graphics-symbol"
       aria-label={`${task.title}, ${formatTime(task.start)} to ${formatTime(task.end)}`}
       onClick={(event) => {
+        event.stopPropagation();
+        onSelect(task);
+      }}
+      onDoubleClick={(event) => {
         event.stopPropagation();
         onEdit(task);
       }}
       opacity={task.scheduled === false ? 0.5 : 1}
     >
+      {selected && (
+        <rect
+          x={xStart - 5}
+          y={baseline - amplitude - 12}
+          width={width + 10}
+          height={amplitude * 2 + 24}
+          rx={8}
+          className="task-selection"
+        />
+      )}
       <PredictionShadow
         task={task}
         xStart={xStart}

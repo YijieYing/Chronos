@@ -50,6 +50,33 @@
   letter-spacing: 0.12em;
 }
 
+.selectionContext {
+  position: absolute;
+  left: 14px;
+  bottom: calc(100% + 8px);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: calc(100% - 28px);
+  padding: 8px 9px 8px 11px;
+  border: 1px solid rgba(49, 108, 84, 0.2);
+  border-radius: 10px;
+  background: rgba(246, 250, 247, 0.96);
+  box-shadow: 0 10px 30px rgba(47, 73, 63, 0.1);
+  color: #3d6757;
+  font: 700 9px/1 "SFMono-Regular", Consolas, monospace;
+}
+
+.selectionContext span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selectionContext button {
+  flex: 0 0 auto;
+  padding: 3px 5px;
+  border: 0;
+  background: transparent;
+  color: #39765e;
+  font: 700 8px/1 "SFMono-Regular", Consolas, monospace;
+}
+
 .commandBar > button:disabled,
 .commandBar input:disabled {
   cursor: wait;

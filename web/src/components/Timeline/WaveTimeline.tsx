@@ -1,5 +1,4 @@
 import {
-  type MouseEvent,
   type PointerEvent,
   type WheelEvent,
   useEffect,
@@ -13,6 +12,7 @@ import type {
   TemporalIntelligence,
   TimelineTask,
   Reminder,
+  TimelineSelection,
 } from "../../types";
 import { CurrentStateCapsule } from "./CurrentStateCapsule";
 import { CognitiveLoadTrack } from "./CognitiveLoadTrack";
@@ -34,7 +34,10 @@ interface WaveTimelineProps {
   intelligence: TemporalIntelligence;
   commands: AgentCommand[];
   focusTarget: number | null;
+  selection: TimelineSelection | null;
+  expandedReminderId: string | null;
   onCreateAt: (time: number) => void;
+  onSelect: (selection: TimelineSelection | null) => void;
   onEditTask: (task: TimelineTask) => void;
   onResolveCommand: (id: string, accepted: boolean) => void;
 }
@@ -46,18 +49,26 @@ export function WaveTimeline({
   intelligence,
   commands,
   focusTarget,
+  selection,
+  expandedReminderId,
   onCreateAt,
+  onSelect,
   onEditTask,
   onResolveCommand,
 }: WaveTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const clickTimer = useRef<number | null>(null);
-  const dragState = useRef<{ x: number; center: number } | null>(null);
+  const dragState = useRef<
+    | { type: "pan"; x: number; center: number }
+    | { type: "range"; pointerId: number; x: number; start: number; moved: boolean }
+    | null
+  >(null);
   const [width, setWidth] = useState(1200);
   const [zoom, setZoom] = useState(1);
   const [centerTime, setCenterTime] = useState(() => now + 2 * 60 * minute);
   const [spacePressed, setSpacePressed] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [rangeDraft, setRangeDraft] = useState<{ start: number; end: number } | null>(null);
   const scale = basePixelsPerMinute * zoom;
 
   useEffect(() => {
@@ -122,29 +133,74 @@ export function WaveTimeline({
   }
 
   function onPointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (!spacePressed) return;
+    if (
+      dragState.current
+      || !isTimelineFieldTarget(event.target)
+      || isInteractiveTimelineTarget(event.target)
+    ) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    dragState.current = { x: event.clientX, center: centerTime };
-    setDragging(true);
+    if (spacePressed) {
+      dragState.current = { type: "pan", x: event.clientX, center: centerTime };
+      setDragging(true);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const start = snap(timeForX(event.clientX - rect.left));
+    dragState.current = {
+      type: "range",
+      pointerId: event.pointerId,
+      x: event.clientX,
+      start,
+      moved: false,
+    };
   }
 
   function onPointerMove(event: PointerEvent<HTMLDivElement>) {
     if (!dragState.current) return;
+    if (
+      dragState.current.type === "range"
+      && dragState.current.pointerId !== event.pointerId
+    ) return;
     const delta = event.clientX - dragState.current.x;
-    setCenterTime(dragState.current.center - (delta / scale) * minute);
+    if (dragState.current.type === "pan") {
+      setCenterTime(dragState.current.center - (delta / scale) * minute);
+      return;
+    }
+    if (Math.abs(delta) < 6) return;
+    dragState.current.moved = true;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const end = snap(timeForX(event.clientX - rect.left));
+    setRangeDraft({ start: dragState.current.start, end });
   }
 
-  function endDrag() {
+  function endDrag(event: PointerEvent<HTMLDivElement>) {
+    const ended = dragState.current;
+    if (ended?.type === "range" && ended.pointerId !== event.pointerId) return;
     dragState.current = null;
     setDragging(false);
+    setRangeDraft(null);
+    if (!ended || ended.type === "pan") return;
+    if (ended.moved) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      let end = snap(timeForX(event.clientX - rect.left));
+      if (end === ended.start) {
+        end += event.clientX >= ended.x ? 15 * minute : -15 * minute;
+      }
+      onSelect({
+        type: "time_range",
+        start: Math.min(ended.start, end),
+        end: Math.max(ended.start, end),
+      });
+      return;
+    }
+    if (clickTimer.current) window.clearTimeout(clickTimer.current);
+    clickTimer.current = window.setTimeout(() => onCreateAt(ended.start), 180);
   }
 
-  function onTimelineClick(event: MouseEvent<SVGSVGElement>) {
-    if (spacePressed || dragging) return;
-    if (clickTimer.current) window.clearTimeout(clickTimer.current);
-    const rect = event.currentTarget.getBoundingClientRect();
-    const targetTime = snap(timeForX(event.clientX - rect.left));
-    clickTimer.current = window.setTimeout(() => onCreateAt(targetTime), 180);
+  function cancelGesture() {
+    dragState.current = null;
+    setDragging(false);
+    setRangeDraft(null);
   }
 
   function returnToNow() {
@@ -163,7 +219,7 @@ export function WaveTimeline({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
-      onPointerCancel={endDrag}
+      onPointerCancel={cancelGesture}
     >
       <div className={styles.timelineReadout}>
         <span>CHRONOS / CONTINUOUS TEMPORAL FIELD</span>
@@ -173,7 +229,6 @@ export function WaveTimeline({
         className={styles.timelineSvg}
         width="100%"
         height={height}
-        onClick={onTimelineClick}
         onDoubleClick={returnToNow}
       >
         <defs>
@@ -209,6 +264,13 @@ export function WaveTimeline({
         })}
         <line x1={0} x2={width} y1={baseline} y2={baseline} stroke="url(#axis-fade)" />
         <AmbientWave width={width} baseline={baseline} />
+        {(rangeDraft || selection?.type === "time_range") && (
+          <RangeSelection
+            selection={rangeDraft ?? selection as Extract<TimelineSelection, { type: "time_range" }>}
+            xFor={xFor}
+            baseline={baseline}
+          />
+        )}
         {tasks.map((task, index) => (
           <TaskWave
             key={task.id}
@@ -218,6 +280,13 @@ export function WaveTimeline({
             xPredictedEnd={xFor(task.predictedEnd)}
             baseline={baseline}
             labelAbove={index % 2 === 0}
+            selected={selection?.type === "task" && (
+              selection.id === task.id || selection.id === task.seriesId
+            )}
+            onSelect={(selectedTask) => onSelect({
+              type: "task",
+              id: selectedTask.seriesId ?? selectedTask.id,
+            })}
             onEdit={onEditTask}
           />
         ))}
@@ -238,7 +307,20 @@ export function WaveTimeline({
       </svg>
       {reminders
         .filter((reminder) => reminder.status === "pending" || reminder.status === "delivered")
-        .map((reminder) => <ReminderBeacon key={reminder.id} reminder={reminder} now={now} xFor={xFor} />)}
+        .map((reminder) => (
+          <ReminderBeacon
+            key={reminder.id}
+            reminder={reminder}
+            now={now}
+            xFor={xFor}
+            selected={selection?.type === "reminder" && selection.id === reminder.id}
+            expanded={expandedReminderId === reminder.id}
+            onSelect={(selectedReminder) => onSelect({
+              type: "reminder",
+              id: selectedReminder.id,
+            })}
+          />
+        ))}
       <CurrentStateCapsule
         intelligence={intelligence}
         activeTask={activeTask}
@@ -262,6 +344,46 @@ export function WaveTimeline({
       </div>
     </section>
   );
+}
+
+function RangeSelection({
+  selection,
+  xFor,
+  baseline,
+}: {
+  selection: { start: number; end: number };
+  xFor: (time: number) => number;
+  baseline: number;
+}) {
+  const start = Math.min(selection.start, selection.end);
+  const end = Math.max(selection.start, selection.end);
+  const xStart = xFor(start);
+  const xEnd = xFor(end);
+  return <g pointerEvents="none">
+    <rect
+      x={xStart}
+      y={baseline - 92}
+      width={Math.max(1, xEnd - xStart)}
+      height={184}
+      rx={9}
+      className={styles.selectionRange}
+    />
+    <line x1={xStart} x2={xStart} y1={baseline - 102} y2={baseline + 102} className={styles.selectionBoundary} />
+    <line x1={xEnd} x2={xEnd} y1={baseline - 102} y2={baseline + 102} className={styles.selectionBoundary} />
+    <text x={(xStart + xEnd) / 2} y={baseline - 109} textAnchor="middle" className="selection-label">
+      {formatTick(start, false)}–{formatTick(end, false)} · {Math.round((end - start) / minute)} MIN
+    </text>
+  </g>;
+}
+
+function isInteractiveTimelineTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(
+    target.closest("[data-timeline-object], button, input, textarea, [role='dialog']"),
+  );
+}
+
+function isTimelineFieldTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest("svg"));
 }
 
 function AmbientWave({ width, baseline }: { width: number; baseline: number }) {

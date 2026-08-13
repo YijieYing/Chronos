@@ -5,7 +5,7 @@ from http import HTTPStatus
 
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.legacy_log import proposal_references
-from chronos.agent.models import LogEventType, TimelineReference
+from chronos.agent.models import InteractionContext, LogEventType, TimelineReference
 from chronos.agent.serialization import log_entry_to_dict
 from chronos.agent.service import OperationStore
 from chronos.api.contracts.common import success
@@ -180,7 +180,11 @@ class V1Router:
             return HTTPStatus.OK, success({"proposals": self._proposals.list()})
         if method == "POST" and path == "/api/v1/proposals":
             text = str(payload.get("text", ""))
+            context = _interaction_context(payload.get("interaction_context"))
             proposal = self._proposals.create(text)
+            proposal = self._proposals.attach_interaction_context(
+                str(proposal["proposal_id"]), _interaction_context_dict(context)
+            )
             self._log_proposal_created(proposal, text)
             return HTTPStatus.CREATED, success(proposal)
         proposal_prefix = "/api/v1/proposals/"
@@ -302,3 +306,37 @@ def _timeline_references(value: object) -> tuple[TimelineReference, ...]:
             )
         )
     return tuple(references)
+
+
+def _interaction_context(value: object) -> InteractionContext:
+    if value is None:
+        return InteractionContext(current_time=int(datetime.now(UTC).timestamp() * 1000))
+    if not isinstance(value, dict):
+        raise ValueError("interaction_context must be an object")
+    selection_value = value.get("selection")
+    selection = None
+    if selection_value is not None:
+        parsed = _timeline_references([selection_value])
+        selection = parsed[0]
+    return InteractionContext(
+        current_time=int(value["current_time"]),
+        selection=selection,
+    )
+
+
+def _interaction_context_dict(context: InteractionContext) -> dict[str, object]:
+    selection = context.selection
+    if selection is None:
+        selection_value = None
+    elif selection.type == "time_range":
+        selection_value = {
+            "type": selection.type,
+            "start": selection.start,
+            "end": selection.end,
+        }
+    else:
+        selection_value = {"type": selection.type, "id": selection.id}
+    return {
+        "current_time": context.current_time,
+        "selection": selection_value,
+    }

@@ -65,6 +65,7 @@ export function TimelineCommand({
   return (
     <motion.div
       className={styles.timelineCommand}
+      data-timeline-object="agent-operation"
       style={{ left: `clamp(16px, ${x}px, calc(100% - 270px))` }}
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: command.status === "proposed" ? 1 : 0.48, y: 0 }}

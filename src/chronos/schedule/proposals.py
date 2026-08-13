@@ -443,6 +443,12 @@ class ProposalService:
     def list(self) -> list[dict[str, object]]:
         return self._repository.list()
 
+    def attach_interaction_context(
+        self, proposal_id: str, context: dict[str, object]
+    ) -> dict[str, object]:
+        proposal = self.get(proposal_id)
+        return self._repository.save({**proposal, "interaction_context": context})
+
     def accept(self, proposal_id: str) -> dict[str, object]:
         proposal = self.get(proposal_id)
         if proposal["status"] != "pending":

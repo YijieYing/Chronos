@@ -31,6 +31,7 @@ export default function App() {
   const [logOpen, setLogOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [expandedReminderId, setExpandedReminderId] = useState<string | null>(null);
   const monitorBucket = Math.floor(now / fiveMinutes) * fiveMinutes;
   const mockMonitor = useMemo(
     () => createMockMonitorData(monitorBucket),
@@ -58,7 +59,19 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const clear = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      timeline.clearSelection();
+      setExpandedReminderId(null);
+    };
+    window.addEventListener("keydown", clear);
+    return () => window.removeEventListener("keydown", clear);
+  }, []);
+
   function openComposer(time = Date.now(), mode: "task" | "reminder" = "task") {
+    timeline.clearSelection();
+    setExpandedReminderId(null);
     setEditingTask(null);
     setComposerStart(time);
     setCreationMode(mode);
@@ -73,6 +86,7 @@ export default function App() {
   }
 
   function focusReference(reference: TimelineReference) {
+    timeline.selectTimeline(reference);
     if (reference.type === "time_range") {
       timeline.focusTime((reference.start + reference.end) / 2);
       setLogOpen(false);
@@ -92,6 +106,24 @@ export default function App() {
       }
     }
     setLogOpen(false);
+  }
+
+  const selectedTask = timeline.selection?.type === "task"
+    ? timeline.tasks.find(
+        (item) => item.id === timeline.selection?.id
+          || item.seriesId === timeline.selection?.id,
+      )
+    : undefined;
+  const selectedReminder = timeline.selection?.type === "reminder"
+    ? timeline.reminders.find((item) => item.id === timeline.selection?.id)
+    : undefined;
+  const selectionLabel = timeline.selection?.type === "time_range"
+    ? `${formatSelectionTime(timeline.selection.start)}–${formatSelectionTime(timeline.selection.end)}`
+    : selectedTask?.title ?? selectedReminder?.title;
+
+  function openSelectionProperties() {
+    if (selectedTask) openTaskEditor(selectedTask);
+    if (selectedReminder) setExpandedReminderId(selectedReminder.id);
   }
 
   return (
@@ -161,12 +193,26 @@ export default function App() {
         intelligence={intelligence}
         commands={timeline.commands}
         focusTarget={timeline.focusTarget}
+        selection={timeline.selection}
+        expandedReminderId={expandedReminderId}
         onCreateAt={(time) => openComposer(time)}
+        onSelect={(selection) => {
+          timeline.selectTimeline(selection);
+          if (selection?.type !== "reminder") setExpandedReminderId(null);
+        }}
         onEditTask={openTaskEditor}
         onResolveCommand={timeline.resolveCommand}
       />
 
-      <AgentInput onSubmit={timeline.runAgent} />
+      <AgentInput
+        onSubmit={timeline.runAgent}
+        selectionLabel={selectionLabel}
+        onClearSelection={() => {
+          timeline.clearSelection();
+          setExpandedReminderId(null);
+        }}
+        onOpenProperties={selectedTask || selectedReminder ? openSelectionProperties : undefined}
+      />
       <OverviewMap
         open={overviewOpen}
         tasks={timeline.tasks}
@@ -206,3 +252,9 @@ export default function App() {
     </main>
   );
 }
+
+const formatSelectionTime = (value: number) => new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+}).format(value);
