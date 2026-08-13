@@ -106,7 +106,7 @@ def operation_to_dict(operation: AgentOperation) -> dict[str, object]:
         "compiled_operations": [
             timeline_operation_to_dict(item) for item in operation.compiled_operations
         ],
-        "projections": [_projection_to_dict(item) for item in operation.projections],
+        "projections": [projection_to_dict(item) for item in operation.projections],
         "references": [_reference_to_dict(item) for item in operation.references],
         "scope": _scope_to_dict(operation.scope),
         "ambiguity": operation.ambiguity,
@@ -172,7 +172,7 @@ def operation_from_dict(payload: dict[str, object]) -> AgentOperation:
         compiled_operations=tuple(
             timeline_operation_from_dict(_dict(item, "operation")) for item in compiled
         ),
-        projections=tuple(_projection_from_dict(_dict(item, "projection")) for item in projections),
+        projections=tuple(projection_from_dict(_dict(item, "projection")) for item in projections),
         references=tuple(_reference_from_dict(_dict(item, "reference")) for item in references),
         scope=_scope_from_dict(_dict(payload["scope"], "scope")),
         ambiguity=float(payload["ambiguity"]),
@@ -329,7 +329,7 @@ def _move_reminder_from_dict(value: dict[str, object]) -> MoveReminderOperation:
     )
 
 
-def _projection_to_dict(item: TimelineProjection) -> dict[str, object]:
+def projection_to_dict(item: TimelineProjection) -> dict[str, object]:
     return {
         "id": item.id,
         "operation_id": item.operation_id,
@@ -342,7 +342,7 @@ def _projection_to_dict(item: TimelineProjection) -> dict[str, object]:
     }
 
 
-def _projection_from_dict(value: dict[str, object]) -> TimelineProjection:
+def projection_from_dict(value: dict[str, object]) -> TimelineProjection:
     return TimelineProjection(
         id=str(value["id"]),
         operation_id=str(value["operation_id"]),

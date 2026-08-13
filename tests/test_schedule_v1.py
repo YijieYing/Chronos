@@ -6,8 +6,11 @@ from unittest import TestCase
 from zoneinfo import ZoneInfo
 
 from chronos.agent.log_service import ChronosLogService
+from chronos.agent.projection_service import ProjectionService
+from chronos.agent.service import OperationStore
 from chronos.api.routes.v1 import V1Router
 from chronos.infrastructure.sqlite_chronos_log import SQLiteChronosLogRepository
+from chronos.infrastructure.sqlite_operations import SQLiteAgentOperationRepository
 from chronos.infrastructure.sqlite_proposals import SQLiteProposalRepository
 from chronos.infrastructure.sqlite_reminders import SQLiteReminderRepository
 from chronos.infrastructure.sqlite_schedule import SQLiteScheduleRepository
@@ -177,6 +180,53 @@ class ScheduleV1Test(TestCase):
                 },
             )
         self.assertEqual(len(self.proposals.list()), 1)
+
+    def test_pending_proposal_projection_disappears_after_resolution(self) -> None:
+        database = Path(self.temporary.name) / "chronos.sqlite3"
+        operation_store = OperationStore(SQLiteAgentOperationRepository(database))
+        router = V1Router(
+            self.schedule,
+            self.proposals,
+            projections=ProjectionService(operation_store),
+        )
+        _, envelope = router.dispatch(
+            "POST", "/api/v1/proposals", {"text": "明天下午安排30分钟阅读"}
+        )
+        proposal = envelope["data"]
+        assert isinstance(proposal, dict)
+
+        _, projected = router.dispatch("GET", "/api/v1/timeline-projections")
+        projection_data = projected["data"]
+        assert isinstance(projection_data, dict)
+        self.assertEqual(len(projection_data["projections"]), 1)
+        self.assertEqual(
+            projection_data["projections"][0]["operation_id"],
+            proposal["proposal_id"],
+        )
+
+        router.dispatch("POST", f"/api/v1/proposals/{proposal['proposal_id']}/reject")
+        _, projected = router.dispatch("GET", "/api/v1/timeline-projections")
+        projection_data = projected["data"]
+        assert isinstance(projection_data, dict)
+        self.assertEqual(projection_data["projections"], [])
+
+        _, accepted_envelope = router.dispatch(
+            "POST", "/api/v1/proposals", {"text": "后天下午安排30分钟写作"}
+        )
+        accepted_proposal = accepted_envelope["data"]
+        assert isinstance(accepted_proposal, dict)
+        router.dispatch(
+            "POST",
+            f"/api/v1/proposals/{accepted_proposal['proposal_id']}/accept",
+        )
+        _, projected = router.dispatch("GET", "/api/v1/timeline-projections")
+        projection_data = projected["data"]
+        assert isinstance(projection_data, dict)
+        self.assertEqual(projection_data["projections"], [])
+        accepted_task_id = str(accepted_proposal["changes"][0]["task_id"])
+        self.assertTrue(
+            any(task.task_id == accepted_task_id for task in self.schedule.list_tasks())
+        )
 
     def test_v1_router_creates_and_updates_an_independent_reminder(self) -> None:
         database = Path(self.temporary.name) / "chronos.sqlite3"

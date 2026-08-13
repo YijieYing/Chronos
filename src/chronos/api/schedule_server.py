@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.legacy_log import migrate_proposal_history
+from chronos.agent.projection_service import ProjectionService
 from chronos.agent.service import OperationStore
 from chronos.api.contracts.common import failure, success
 from chronos.api.contracts.schedule import scheduled_task_values
@@ -47,6 +48,7 @@ SERVICE_CAPABILITIES = [
     "schedule-proposals",
     "reminders-v1",
     "chronos-log-v1",
+    "timeline-projections-v1",
 ]
 
 
@@ -364,6 +366,7 @@ def main() -> int:
     reminder_service = ReminderService(SQLiteReminderRepository(args.database))
     chronos_log_service = ChronosLogService(SQLiteChronosLogRepository(args.database))
     operation_store = OperationStore(SQLiteAgentOperationRepository(args.database))
+    projection_service = ProjectionService(operation_store)
     memory_repository = SQLiteAgentMemoryRepository(args.database)
     memory_service = AgentMemoryService(memory_repository, args.agent_import_dir)
     agent_config = load_agent_config(args.agent_config)
@@ -386,6 +389,7 @@ def main() -> int:
         reminder_service,
         chronos_log_service,
         operation_store,
+        projection_service,
     )
     root = Path(__file__).resolve().parents[3] / "web" / "dist"
     if not root.is_dir():

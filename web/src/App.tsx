@@ -15,13 +15,15 @@ import {
 } from "./monitor/MonitorAdapter";
 import { useLiveMonitor } from "./monitor/useLiveMonitor";
 import { useTimelineStore } from "./state/timelineStore";
+import { useProjectionStore } from "./state/projectionStore";
 import type { TimelineReference, TimelineTask } from "./types";
 import styles from "./App.module.css";
 
 const fiveMinutes = 5 * 60_000;
 
 export default function App() {
-  const timeline = useTimelineStore();
+  const projectionStore = useProjectionStore();
+  const timeline = useTimelineStore(projectionStore.refresh);
   const liveMonitor = useLiveMonitor();
   const [now, setNow] = useState(Date.now());
   const [composerOpen, setComposerOpen] = useState(false);
@@ -192,6 +194,7 @@ export default function App() {
         reminders={timeline.reminders}
         intelligence={intelligence}
         commands={timeline.commands}
+        projections={projectionStore.projections}
         focusTarget={timeline.focusTarget}
         selection={timeline.selection}
         expandedReminderId={expandedReminderId}

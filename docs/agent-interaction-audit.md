@@ -14,6 +14,9 @@ Implementation progress:
 - Phase 4 completed: one Task/Reminder/TimeRange selection union, object selection separated from
   properties, empty-field press-drag range selection, larger Reminder hit targets, contextual
   Command Bar state, and validated InteractionContext transport to proposal persistence and Log.
+- Phase 5 completed: active Projection read model/API, legacy Proposal projection adapter,
+  independent frontend Projection Store, and dedicated proposed/incomplete Task, Reminder, and range
+  renderers whose lifecycle is independent from Chronos Log visibility.
 - Operation/Log foundations now bridge the legacy proposal workflow; Compiler and Runtime wiring
   still begins in later phases.
 
@@ -172,6 +175,12 @@ contract. Semantic reference resolution itself remains Phase 6/7 work.
 Render typed projections supplied by operations. Projections live outside Log UI state and disappear
 only through operation lifecycle rules. Existing task/reminder renderers remain unchanged; dedicated
 incomplete/proposed renderers share timeline coordinates but never mutate committed data.
+
+Implemented as an active read model over OperationStore with a compatibility adapter for pending
+legacy Proposals. Real Operation projections take precedence when both sources share an operation ID;
+stale and terminal operations are omitted. The frontend fetches projections into a separate store and
+renders them in a pointer-inert SVG layer. Apply/Reject refreshes the store, replacing ghosts with
+committed objects or removing them without consulting Chronos Log UI state.
 
 ### Phases 6–7 — Compiler interface and LLM adapter
 

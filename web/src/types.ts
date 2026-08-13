@@ -100,6 +100,17 @@ export type TimelineReference =
 
 export type TimelineSelection = TimelineReference;
 
+export interface TimelineProjection {
+  id: string;
+  operationId: string;
+  type: "clarification" | "proposal";
+  target: TimelineReference;
+  visualState: "incomplete" | "proposed";
+  start?: number;
+  end?: number;
+  metadata: Record<string, unknown>;
+}
+
 export type ChronosLogEventType =
   | "user_prompt" | "agent_message" | "operation_created"
   | "clarification_requested" | "clarification_answered"

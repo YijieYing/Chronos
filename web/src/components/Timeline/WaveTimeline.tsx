@@ -13,6 +13,7 @@ import type {
   TimelineTask,
   Reminder,
   TimelineSelection,
+  TimelineProjection,
 } from "../../types";
 import { CurrentStateCapsule } from "./CurrentStateCapsule";
 import { CognitiveLoadTrack } from "./CognitiveLoadTrack";
@@ -21,6 +22,7 @@ import { TimeCursor } from "./TimeCursor";
 import { TimelineCommand } from "../Agent/TimelineCommand";
 import styles from "./Timeline.module.css";
 import { ReminderBeacon } from "./ReminderBeacon";
+import { ProjectionLayer } from "./ProjectionLayer";
 
 const minute = 60_000;
 const basePixelsPerMinute = 1.45;
@@ -33,6 +35,7 @@ interface WaveTimelineProps {
   reminders: Reminder[];
   intelligence: TemporalIntelligence;
   commands: AgentCommand[];
+  projections: TimelineProjection[];
   focusTarget: number | null;
   selection: TimelineSelection | null;
   expandedReminderId: string | null;
@@ -48,6 +51,7 @@ export function WaveTimeline({
   reminders,
   intelligence,
   commands,
+  projections,
   focusTarget,
   selection,
   expandedReminderId,
@@ -264,6 +268,11 @@ export function WaveTimeline({
         })}
         <line x1={0} x2={width} y1={baseline} y2={baseline} stroke="url(#axis-fade)" />
         <AmbientWave width={width} baseline={baseline} />
+        <ProjectionLayer
+          projections={projections}
+          xFor={xFor}
+          baseline={baseline}
+        />
         {(rangeDraft || selection?.type === "time_range") && (
           <RangeSelection
             selection={rangeDraft ?? selection as Extract<TimelineSelection, { type: "time_range" }>}

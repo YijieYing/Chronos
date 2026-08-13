@@ -282,6 +282,11 @@
 .selectionRange { fill: rgba(66, 151, 113, 0.08); stroke: rgba(45, 130, 93, 0.55); stroke-width: 1; stroke-dasharray: 4 4; }
 .selectionBoundary { stroke: rgba(45, 130, 93, 0.72); stroke-width: 1; }
 :global(.selection-label) { fill: #317258; font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .06em; }
+
+.projectionLayer { isolation: isolate; }
+.proposedProjection { fill: rgba(54, 143, 105, .075); stroke: rgba(42, 133, 94, .58); stroke-width: 1; stroke-dasharray: 4 5; }
+.incompleteProjection { fill: rgba(91, 117, 105, .025); stroke: rgba(86, 111, 101, .46); stroke-width: 1; stroke-dasharray: 2 7; }
+:global(.projection-label) { fill: #4b7966; font-family: var(--mono); font-size: 8px; font-weight: 700; letter-spacing: .07em; }
 :global(.task-kicker) { fill: #4c6d5d; font-size: 8px; }
 :global(.task-meta) { font-size: 8px; }
 :global(.forecast-label) { fill: #7f9489; font-size: 8px; }

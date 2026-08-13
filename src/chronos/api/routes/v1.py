@@ -6,7 +6,8 @@ from http import HTTPStatus
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.legacy_log import proposal_references
 from chronos.agent.models import InteractionContext, LogEventType, TimelineReference
-from chronos.agent.serialization import log_entry_to_dict
+from chronos.agent.projection_service import ProjectionService
+from chronos.agent.serialization import log_entry_to_dict, projection_to_dict
 from chronos.agent.service import OperationStore
 from chronos.api.contracts.common import success
 from chronos.api.contracts.schedule import scheduled_task_values
@@ -28,6 +29,7 @@ class V1Router:
         reminders: ReminderService | None = None,
         chronos_log: ChronosLogService | None = None,
         operation_store: OperationStore | None = None,
+        projections: ProjectionService | None = None,
     ) -> None:
         self._schedule = schedule
         self._proposals = proposals
@@ -35,6 +37,7 @@ class V1Router:
         self._reminders = reminders
         self._chronos_log = chronos_log
         self._operation_store = operation_store
+        self._projections = projections
 
     def dispatch(
         self,
@@ -45,6 +48,13 @@ class V1Router:
         if not path.startswith("/api/v1/"):
             return None
         payload = payload or {}
+        if method == "GET" and path == "/api/v1/timeline-projections":
+            if self._projections is None:
+                return HTTPStatus.OK, success({"projections": []})
+            projections = self._projections.list_active(tuple(self._proposals.list()))
+            return HTTPStatus.OK, success(
+                {"projections": [projection_to_dict(item) for item in projections]}
+            )
         if self._chronos_log is not None and path == "/api/v1/chronos-log":
             if method == "GET":
                 entries = [log_entry_to_dict(item) for item in self._chronos_log.list()]

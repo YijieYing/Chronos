@@ -25,7 +25,7 @@ import { appendChronosLog, loadChronosLog } from "../api/chronosLog";
 
 const minute = 60_000;
 
-export function useTimelineStore() {
+export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
   const [tasks, setTasks] = useState<TimelineTask[]>([]);
   const [commands, setCommands] = useState<AgentCommand[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
@@ -310,6 +310,7 @@ export function useTimelineStore() {
         setFocusTarget(proposal.results[0].start);
       }
       await refreshLog();
+      await onOperationsChanged?.();
       confirmStorage();
     } catch (error) {
       reportStorageError(error);
@@ -336,6 +337,7 @@ export function useTimelineStore() {
         setReminders(storedReminders);
       }
       await refreshLog();
+      await onOperationsChanged?.();
       confirmStorage();
     } catch (error) {
       setCommands((current) =>
@@ -360,6 +362,7 @@ export function useTimelineStore() {
         setTasks(storedTasks);
         setReminders(storedReminders);
         await refreshLog();
+        await onOperationsChanged?.();
         confirmStorage();
       } catch (error) {
         reportStorageError(error);
