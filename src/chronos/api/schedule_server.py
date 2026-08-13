@@ -33,6 +33,16 @@ from chronos.schedule.proposals import ProposalService
 from chronos.schedule.semantic_parser import build_command_parser
 from chronos.schedule.service import ScheduleService
 
+SERVICE_CAPABILITIES = [
+    "schedule",
+    "monitor-observation-ingest",
+    "cognitive-state-history",
+    "timeline-task-storage",
+    "schedule-v1",
+    "schedule-proposals",
+    "reminders-v1",
+]
+
 
 class ScheduleRequestHandler(BaseHTTPRequestHandler):
     service: ScheduleService
@@ -53,14 +63,7 @@ class ScheduleRequestHandler(BaseHTTPRequestHandler):
                 {
                     "service": "chronos-local",
                     "schema_version": 2,
-                    "capabilities": [
-                        "schedule",
-                        "monitor-observation-ingest",
-                        "cognitive-state-history",
-                        "timeline-task-storage",
-                        "schedule-v1",
-                        "schedule-proposals",
-                    ],
+                    "capabilities": SERVICE_CAPABILITIES,
                     "agent": {
                         "provider": self.agent_provider,
                         "semantic_enabled": self.agent_semantic_enabled,

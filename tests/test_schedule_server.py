@@ -1,10 +1,13 @@
 from http import HTTPStatus
 from unittest import TestCase
 
-from chronos.api.schedule_server import ScheduleRequestHandler
+from chronos.api.schedule_server import SERVICE_CAPABILITIES, ScheduleRequestHandler
 
 
 class ScheduleServerErrorTest(TestCase):
+    def test_health_capabilities_include_reminder_api(self) -> None:
+        self.assertIn("reminders-v1", SERVICE_CAPABILITIES)
+
     def test_runtime_provider_error_becomes_structured_bad_gateway(self) -> None:
         handler = object.__new__(ScheduleRequestHandler)
         handler.path = "/api/v1/proposals"

@@ -37,27 +37,29 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 PORT=8765
+service_is_current() {
+  curl --noproxy '*' --silent --fail --max-time 1 \
+    "http://127.0.0.1:$1/api/health" \
+    | grep -q 'reminders-v1'
+}
+
 if curl --noproxy '*' --silent --fail --max-time 1 \
-  "http://127.0.0.1:$PORT/api/schedule" >/dev/null \
-  && ! curl --noproxy '*' --silent --fail --max-time 1 \
-    "http://127.0.0.1:$PORT/api/health" \
-    | grep -q 'timeline-task-storage'; then
+  "http://127.0.0.1:$PORT/api/health" >/dev/null \
+  && ! service_is_current "$PORT"; then
   PORT=8766
-  echo "An older Chronos service is using port 8765; starting the current version on 8766."
+  echo "An incompatible Chronos service is using port 8765; starting the current version on 8766."
 fi
 
 HEALTH_URL="http://127.0.0.1:$PORT/api/health"
 MONITOR_URL="http://127.0.0.1:$PORT/api/current-state"
 INGEST_URL="http://127.0.0.1:$PORT/api/monitor/observations"
 
-if ! curl --noproxy '*' --silent --fail --max-time 1 "$HEALTH_URL" \
-  | grep -q 'timeline-task-storage'; then
+if ! service_is_current "$PORT"; then
   ./scripts/run-schedule.sh --port "$PORT" >"$SERVER_LOG" 2>&1 &
   STARTED_SERVER_PID=$!
 
   for _ in {1..50}; do
-    if curl --noproxy '*' --silent --fail --max-time 1 "$HEALTH_URL" \
-      | grep -q 'timeline-task-storage'; then
+    if service_is_current "$PORT"; then
       break
     fi
     if ! kill -0 "$STARTED_SERVER_PID" 2>/dev/null; then
@@ -68,8 +70,7 @@ if ! curl --noproxy '*' --silent --fail --max-time 1 "$HEALTH_URL" \
     sleep 0.1
   done
 
-  if ! curl --noproxy '*' --silent --fail --max-time 1 "$HEALTH_URL" \
-    | grep -q 'timeline-task-storage'; then
+  if ! service_is_current "$PORT"; then
     echo "Chronos local service did not become ready. See $SERVER_LOG"
     exit 1
   fi

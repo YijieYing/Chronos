@@ -36,26 +36,31 @@ export function useTimelineStore() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([loadTimelineTasks(), loadProposals(), loadReminders()])
-      .then(([storedTasks, storedProposals, storedReminders]) => {
+    Promise.allSettled([loadTimelineTasks(), loadProposals(), loadReminders()])
+      .then(([taskResult, proposalResult, reminderResult]) => {
         if (!active) return;
-        if (!hasLocalMutation.current) setTasks(storedTasks);
-        setReminders(storedReminders);
-        const latestProposal = storedProposals[0];
-        setCommands(
-          latestProposal &&
-            (latestProposal.status === "pending" ||
-              latestProposal.status === "needs_clarification")
-            ? [proposalToCommand(latestProposal)]
-            : [],
-        );
-        setLogs(storedProposals.map(proposalToLog));
-        setStorageStatus("ready");
-        setStorageError(null);
-      })
-      .catch((error: unknown) => {
-        if (!active) return;
-        reportStorageError(error);
+        if (taskResult.status === "fulfilled") {
+          if (!hasLocalMutation.current) setTasks(taskResult.value);
+          setStorageStatus("ready");
+        } else {
+          reportStorageError(taskResult.reason);
+        }
+        if (proposalResult.status === "fulfilled") {
+          const latestPending = proposalResult.value.find(
+            (proposal) => proposal.status === "pending",
+          );
+          setCommands(latestPending ? [proposalToCommand(latestPending)] : []);
+          setLogs(proposalResult.value.map(proposalToLog));
+        }
+        if (reminderResult.status === "fulfilled") {
+          setReminders(reminderResult.value);
+        }
+        const optionalFailures = [proposalResult, reminderResult]
+          .filter((result) => result.status === "rejected")
+          .map((result) => errorMessage(result.reason));
+        if (taskResult.status === "fulfilled") {
+          setStorageError(optionalFailures.length ? optionalFailures.join(" · ") : null);
+        }
       });
     return () => {
       active = false;
@@ -431,7 +436,7 @@ export function useTimelineStore() {
 
   function reportStorageError(error: unknown) {
     setStorageStatus("error");
-    setStorageError(error instanceof Error ? error.message : String(error));
+    setStorageError(errorMessage(error));
   }
 
   function confirmStorage() {
@@ -457,6 +462,10 @@ export function useTimelineStore() {
     resolveCommand,
     restoreLog,
   };
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 const formatTime = (time: number) =>
