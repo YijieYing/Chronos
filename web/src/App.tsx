@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { loadAutonomyPolicy, updateAutonomyPolicy } from "./api/autonomy";
 import { AgentInput } from "./components/Agent/AgentInput";
 import { ChronosLog } from "./components/Agent/ChronosLog";
 import { MemorySync } from "./components/Agent/MemorySync";
@@ -33,6 +34,7 @@ export default function App() {
   const [logOpen, setLogOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [autonomyLevel, setAutonomyLevel] = useState(0);
   const [expandedReminderId, setExpandedReminderId] = useState<string | null>(null);
   const monitorBucket = Math.floor(now / fiveMinutes) * fiveMinutes;
   const mockMonitor = useMemo(
@@ -59,6 +61,10 @@ export default function App() {
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    void loadAutonomyPolicy().then((policy) => setAutonomyLevel(policy.level));
   }, []);
 
   useEffect(() => {
@@ -162,6 +168,24 @@ export default function App() {
           </div>
           <button onClick={() => setOverviewOpen(true)}>OVERVIEW</button>
           <button onClick={() => setMemoryOpen(true)}>MEMORY SYNC</button>
+          <label className={styles.autonomyControl}>
+            AUTONOMY
+            <select
+              aria-label="Chronos autonomy level"
+              value={autonomyLevel}
+              onChange={(event) => {
+                const level = Number(event.target.value);
+                void updateAutonomyPolicy(level).then((policy) => {
+                  setAutonomyLevel(policy.level);
+                });
+              }}
+            >
+              <option value={0}>L0 · Suggest</option>
+              <option value={1}>L1 · Safe</option>
+              <option value={2}>L2 · Routine</option>
+              <option value={3}>L3 · Full</option>
+            </select>
+          </label>
           <button onClick={() => openComposer()}>＋ TASK</button>
           <button onClick={() => openComposer(Date.now(), "reminder")}>◇ REMINDER</button>
           <button onClick={() => setLogOpen(true)}>

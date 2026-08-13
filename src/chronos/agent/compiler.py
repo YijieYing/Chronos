@@ -164,6 +164,9 @@ def _compile_interpretation(
     now = datetime.fromtimestamp(context.current_time / 1000, UTC)
     created_at = created_at_value if isinstance(created_at_value, datetime) else now
     operations = _interpretation_operations(interpretation, tasks)
+    risk, ambiguity, impact, required_level = _operation_metrics(
+        interpretation, operations, context.selection
+    )
     questions = tuple(
         ClarificationState(item.field, item.question, item.options)
         for item in interpretation.unresolved
@@ -211,11 +214,11 @@ def _compile_interpretation(
         projections=projections,
         references=references,
         scope=_scope(operations, projections),
-        ambiguity=0.75 if questions else 0.1,
-        risk=0.15 if operations else 0,
-        impact=min(1, len(operations) * 0.2),
+        ambiguity=0.75 if questions else ambiguity,
+        risk=risk,
+        impact=impact,
         reversible=True,
-        required_autonomy_level=0,
+        required_autonomy_level=required_level,
         created_at=created_at,
         updated_at=now,
         version=version,
@@ -399,6 +402,34 @@ def _interpretation_message(
     if interpretation.intent == "create_schedule":
         return f"准备让 Schedule planner 安排 {len(operations)} 个任务。"
     return "准备修改选中的时间轴对象。"
+
+
+def _operation_metrics(
+    interpretation: AgentInterpretation,
+    operations: tuple[TimelineOperation, ...],
+    selection: TimelineReference | None,
+) -> tuple[float, float, float, int]:
+    if interpretation.unresolved or not operations:
+        return 0, 0.75, 0, 0
+    count = len(operations)
+    if all(isinstance(item, CreateReminderOperation) for item in operations):
+        return 0.05, 0.05, min(0.2, count * 0.1), 1
+    if all(isinstance(item, UpdateTaskOperation) for item in operations):
+        selected = selection is not None and selection.type == "task"
+        return 0.1, 0.05 if selected else 0.2, min(0.4, count * 0.2), 1
+    if all(isinstance(item, DeleteTaskOperation) for item in operations):
+        selected = selection is not None and selection.type == "task"
+        return 0.12, 0.05 if selected else 0.2, min(0.3, count * 0.15), 1
+    recurring = any(
+        isinstance(item, CreateTaskOperation) and item.task.recurrence is not None
+        for item in operations
+    )
+    return (
+        0.2 if recurring else 0.12,
+        0.1,
+        min(0.8, count * (0.35 if recurring else 0.25)),
+        2 if recurring or count > 1 else 1,
+    )
 
 
 def _context_tasks(value: object) -> list[Task]:

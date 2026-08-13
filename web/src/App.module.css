@@ -114,6 +114,25 @@
   font-style: normal;
 }
 
+.autonomyControl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid #d3ded9;
+  border-radius: 8px;
+  color: #718078;
+  font: 700 8px/1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.08em;
+}
+
+.autonomyControl select {
+  border: 0;
+  background: transparent;
+  color: #315d4d;
+  font: 700 9px/1 "SFMono-Regular", Consolas, monospace;
+}
+
 .monitorStatus {
   display: flex;
   align-items: center;

@@ -21,6 +21,7 @@ from chronos.schedule.ports import ScheduleRepository
 class ScheduleService:
     DEFAULTS = {
         "timezone": "Asia/Shanghai",
+        "autonomy_level": "0",
     }
 
     def __init__(self, repository: ScheduleRepository, planner: DailyPlanner | None = None) -> None:
@@ -39,10 +40,13 @@ class ScheduleService:
         for key, value in values.items():
             if key not in allowed:
                 continue
-            try:
-                ZoneInfo(value)
-            except ZoneInfoNotFoundError as error:
-                raise ValueError(f"unknown timezone: {value}") from error
+            if key == "timezone":
+                try:
+                    ZoneInfo(value)
+                except ZoneInfoNotFoundError as error:
+                    raise ValueError(f"unknown timezone: {value}") from error
+            elif key == "autonomy_level" and str(value) not in {"0", "1", "2", "3"}:
+                raise ValueError("autonomy level must be from 0 to 3")
             merged[key] = value
         for key, value in merged.items():
             self._repository.set_setting(key, value)

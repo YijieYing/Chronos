@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 
+from chronos.agent.autonomy import evaluate_autonomy, policy_for_level
 from chronos.agent.compiler import (
     ChronosCompiler,
     ClarificationCompilerResult,
@@ -13,6 +14,7 @@ from chronos.agent.compiler import (
 from chronos.agent.legacy_log import proposal_references
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.models import (
+    AutonomyPolicy,
     InteractionContext,
     LogEventType,
     OperationScope,
@@ -73,6 +75,16 @@ class V1Router:
             return HTTPStatus.OK, success(
                 {"projections": [projection_to_dict(item) for item in projections]}
             )
+        if path == "/api/v1/agent/autonomy":
+            if method == "GET":
+                level = int(self._schedule.settings()["autonomy_level"])
+                policy = policy_for_level(level)
+                return HTTPStatus.OK, success(_autonomy_dict(policy))
+            if method == "PUT":
+                level = int(payload["level"])
+                policy = policy_for_level(level)
+                self._schedule.update_settings({"autonomy_level": str(level)})
+                return HTTPStatus.OK, success(_autonomy_dict(policy))
         if self._chronos_log is not None and path == "/api/v1/chronos-log":
             if method == "GET":
                 entries = [log_entry_to_dict(item) for item in self._chronos_log.list()]
@@ -265,6 +277,7 @@ class V1Router:
             )
             self._compile_proposal(proposal, text, context, compiled)
             self._log_proposal_created(proposal, text)
+            proposal = self._apply_autonomy(proposal)
             return HTTPStatus.CREATED, success(proposal)
         proposal_prefix = "/api/v1/proposals/"
         if path.startswith(proposal_prefix):
@@ -486,6 +499,24 @@ class V1Router:
             metadata={"proposal_status": status},
         )
 
+    def _apply_autonomy(self, proposal: dict[str, object]) -> dict[str, object]:
+        if self._operation_store is None or proposal.get("status") != "pending":
+            return proposal
+        operation = self._operation_store.get(str(proposal["proposal_id"]))
+        policy = policy_for_level(int(self._schedule.settings()["autonomy_level"]))
+        decision = evaluate_autonomy(operation, policy)
+        if not decision.execute:
+            return proposal
+        applied = self._proposals.accept(operation.id)
+        self._complete_operation(operation.id)
+        self._log_proposal_event(
+            applied,
+            LogEventType.OPERATION_COMPLETED,
+            f"已按 Autonomy Level {policy.level} 直接执行；可撤销。",
+        )
+        self._timeline_changed(operation.scope, exclude_operation_id=operation.id)
+        return applied
+
     def _compile_proposal(
         self,
         proposal: dict[str, object],
@@ -569,6 +600,23 @@ def _reminder_values(payload: dict[str, object]) -> dict[str, object]:
         "delivery": str(payload.get("delivery", "exact")),
         "priority": int(payload.get("priority", 3)),
         "source": str(payload.get("source", "user")),
+    }
+
+
+def _autonomy_dict(policy: AutonomyPolicy) -> dict[str, object]:
+    labels = {
+        0: "Suggest Only",
+        1: "Safe Actions",
+        2: "Routine Autonomy",
+        3: "Full Planning",
+    }
+    return {
+        "level": policy.level,
+        "label": labels[policy.level],
+        "max_risk": policy.max_risk,
+        "max_ambiguity": policy.max_ambiguity,
+        "max_impact": policy.max_impact,
+        "require_reversible": policy.require_reversible,
     }
 
 

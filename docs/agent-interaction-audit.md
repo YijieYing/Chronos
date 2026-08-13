@@ -236,6 +236,14 @@ Log writes into `ChronosRuntime`. Initially default migrated users to Level 0 to
 behavior. Add direct execution only after risk, ambiguity, impact, and reversibility are persisted and
 tested. Runtime delegates planning to Schedule and Reminder writes to Reminder, never to the LLM.
 
+Phase 10 implements the four persisted Autonomy levels and one deterministic Gate over required
+level, risk, ambiguity, impact, and reversibility. Level 0 always proposes; Levels 1–3 progressively
+raise the permitted thresholds, but none bypasses ambiguity or irreversibility checks. The Compiler
+assigns conservative metrics by primitive category. A passing Operation is accepted through the
+same Proposal/Operation lifecycle, writes Chronos Log, and remains restorable; it never writes the
+Timeline directly from the LLM. The current policy is switchable from the header or
+`/api/v1/agent/autonomy`. Transaction capture and generalized Runtime rollback remain Phase 11.
+
 ### Phase 12 — Adjustment integration
 
 Define signals in Phase 1 but keep production emission disabled. Later, Adaptation creates Operations

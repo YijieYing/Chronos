@@ -367,6 +367,51 @@ class ScheduleV1Test(TestCase):
             ["proposal_updated", "operation_stale"],
         )
 
+    def test_autonomy_level_one_directly_executes_safe_reminder_with_undo(self) -> None:
+        database = Path(self.temporary.name) / "chronos.sqlite3"
+        reminders = ReminderService(SQLiteReminderRepository(database))
+        proposals = ProposalService(
+            self.schedule, SQLiteProposalRepository(database), reminders=reminders
+        )
+        operation_store = OperationStore(SQLiteAgentOperationRepository(database))
+        chronos_log = ChronosLogService(SQLiteChronosLogRepository(database))
+        response = """{
+          "intent":"create_reminder","tasks":[],"reminders":[{
+            "title":"取快递","title_source":"取快递",
+            "trigger":{"type":"time","at":"2026-08-13T15:20:00+08:00"},
+            "temporal_sources":["15:20"],"delivery":"exact",
+            "delivery_sources":[],"priority":3
+          }],"unresolved":[],"assumptions":[]
+        }"""
+        compiler = LLMChronosCompiler(SemanticScheduleCommandParser(
+            _SequenceProvider(response), fallback_on_error=False
+        ))
+        router = V1Router(
+            self.schedule, proposals, reminders=reminders,
+            chronos_log=chronos_log, operation_store=operation_store,
+            compiler=compiler,
+        )
+        router.dispatch("PUT", "/api/v1/agent/autonomy", {"level": 1})
+
+        _, envelope = router.dispatch(
+            "POST", "/api/v1/proposals",
+            {
+                "text": "15:20提醒我取快递",
+                "interaction_context": {
+                    "current_time": 1_786_608_000_000, "selection": None
+                },
+            },
+        )
+        proposal = envelope["data"]
+        assert isinstance(proposal, dict)
+
+        self.assertEqual(proposal["status"], "accepted")
+        self.assertEqual(reminders.list()[0]["title"], "取快递")
+        self.assertEqual(operation_store.get(str(proposal["proposal_id"])).state.value, "completed")
+        self.assertIn("可撤销", chronos_log.list()[0].message)
+        proposals.restore(str(proposal["proposal_id"]))
+        self.assertEqual(reminders.list(), [])
+
     def test_v1_router_creates_and_updates_an_independent_reminder(self) -> None:
         database = Path(self.temporary.name) / "chronos.sqlite3"
         reminders = ReminderService(SQLiteReminderRepository(database))
