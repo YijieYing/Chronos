@@ -8,7 +8,11 @@ Implementation progress:
 - Phase 1 completed: immutable Agent/IR contracts and versioned strict serialization.
 - Phase 2 completed: lifecycle validation, optimistic versioning, SQLite Operation persistence,
   parallel pending queries, and scope-based stale marking.
-- These foundations are not wired into the proposal API or UI yet; that begins in later phases.
+- Phase 3 completed: append-only Chronos Log persistence, proposal/manual event ingestion,
+  Operation-linked pending counts, legacy proposal history import, TimelineReference navigation,
+  and Collapsed/Peek/Expanded frontend states.
+- Operation/Log foundations now bridge the legacy proposal workflow; Compiler and Runtime wiring
+  still begins in later phases.
 
 ## Current architecture
 
@@ -139,6 +143,12 @@ one service and invalid transitions fail before persistence.
 Add an append-only persisted log table keyed by `operation_id`, with serialized TimelineReferences.
 Replace proposal-derived and browser-only log entries incrementally. Keep the current drawer as the
 Expanded view, then add Collapsed/Peek and pending counts from OperationStore.
+
+Implemented without replacing the proposal workflow: proposal lifecycle events are appended by the
+backend, manual edits append through the same API, and old proposal rows are imported once as one
+compatibility snapshot. The badge counts operations requiring action rather than history entries.
+Peek shows the newest actionable event; Expanded exposes references that pan the shared Timeline.
+Selection, projection, and Runtime-owned transactions remain in their later phases.
 
 ### Phase 4 — Timeline selection context
 

@@ -9,6 +9,7 @@ from datetime import datetime
 from chronos.agent.models import (
     AdjustmentPolicy,
     AgentOperation,
+    ChronosLogEntry,
     ClarificationState,
     CreateRecurrenceOperation,
     CreateReminderOperation,
@@ -17,6 +18,7 @@ from chronos.agent.models import (
     DeleteReminderOperation,
     DeleteTaskOperation,
     IntentSnapshot,
+    LogEventType,
     MoveReminderOperation,
     MoveTaskOperation,
     OperationScope,
@@ -40,6 +42,53 @@ from chronos.agent.models import (
 )
 
 AGENT_OPERATION_SCHEMA_VERSION = 1
+CHRONOS_LOG_SCHEMA_VERSION = 1
+
+
+def log_entry_to_dict(entry: ChronosLogEntry) -> dict[str, object]:
+    return {
+        "schema_version": CHRONOS_LOG_SCHEMA_VERSION,
+        "id": entry.id,
+        "event_type": entry.event_type.value,
+        "occurred_at": entry.occurred_at.isoformat(),
+        "message": entry.message,
+        "operation_id": entry.operation_id,
+        "references": [_reference_to_dict(item) for item in entry.references],
+        "metadata": dict(entry.metadata),
+    }
+
+
+def log_entry_from_dict(payload: dict[str, object]) -> ChronosLogEntry:
+    _keys(
+        payload,
+        {
+            "schema_version",
+            "id",
+            "event_type",
+            "occurred_at",
+            "message",
+            "operation_id",
+            "references",
+            "metadata",
+        },
+        "log entry",
+    )
+    if payload["schema_version"] != CHRONOS_LOG_SCHEMA_VERSION:
+        raise ValueError("unsupported Chronos Log schema version")
+    return ChronosLogEntry(
+        id=str(payload["id"]),
+        event_type=LogEventType(str(payload["event_type"])),
+        occurred_at=datetime.fromisoformat(str(payload["occurred_at"])),
+        message=str(payload["message"]),
+        operation_id=(
+            str(payload["operation_id"]) if payload["operation_id"] is not None else None
+        ),
+        references=tuple(
+            _reference_from_dict(_dict(item, "reference"))
+            for item in _list(payload["references"], "references")
+        ),
+        metadata=_dict(payload["metadata"], "metadata"),
+    )
 
 
 def operation_to_dict(operation: AgentOperation) -> dict[str, object]:

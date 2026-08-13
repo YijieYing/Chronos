@@ -36,6 +36,12 @@ export async function updateReminderStatus(
   return fromPayload(result);
 }
 
+export async function deleteReminder(id: string): Promise<void> {
+  await apiRequest(`/api/v1/reminders/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
 const fromPayload = (value: ReminderPayload): Reminder => ({
   ...value,
   createdAt: new Date(value.created_at).getTime(),

@@ -93,18 +93,27 @@ export interface AgentCommand {
   canResolve?: boolean;
 }
 
+export type TimelineReference =
+  | { type: "task"; id: string; start?: never; end?: never }
+  | { type: "reminder"; id: string; start?: never; end?: never }
+  | { type: "time_range"; start: number; end: number; id?: never };
+
+export type ChronosLogEventType =
+  | "user_prompt" | "agent_message" | "operation_created"
+  | "clarification_requested" | "clarification_answered"
+  | "proposal_created" | "proposal_updated" | "operation_approved"
+  | "operation_executed" | "operation_completed" | "operation_rejected"
+  | "operation_failed" | "manual_task_move" | "manual_task_resize"
+  | "manual_reminder_move" | "undo" | "restore";
+
 export interface ChronosLogEntry {
   id: string;
   time: number;
-  request: string;
-  response: string;
-  status: "proposed" | "applied" | "rejected" | "restored" | "info";
-  addedTaskId?: string;
-  changedTaskId?: string;
-  previousTask?: TimelineTask;
-  deletedTask?: TimelineTask;
-  proposalId?: string;
-  contextUsed?: string[];
+  eventType: ChronosLogEventType;
+  message: string;
+  operationId?: string;
+  references: TimelineReference[];
+  metadata: Record<string, unknown>;
 }
 
 export interface NewTaskInput {

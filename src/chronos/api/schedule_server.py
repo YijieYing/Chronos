@@ -13,11 +13,16 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
+from chronos.agent.log_service import ChronosLogService
+from chronos.agent.legacy_log import migrate_proposal_history
+from chronos.agent.service import OperationStore
 from chronos.api.contracts.common import failure, success
 from chronos.api.contracts.schedule import scheduled_task_values
 from chronos.api.routes.v1 import V1Router
 from chronos.infrastructure.sqlite_agent_memory import SQLiteAgentMemoryRepository
 from chronos.infrastructure.sqlite_cognitive_state import SQLiteCognitiveStateRepository
+from chronos.infrastructure.sqlite_chronos_log import SQLiteChronosLogRepository
+from chronos.infrastructure.sqlite_operations import SQLiteAgentOperationRepository
 from chronos.infrastructure.sqlite_proposals import SQLiteProposalRepository
 from chronos.infrastructure.sqlite_reminders import SQLiteReminderRepository
 from chronos.infrastructure.sqlite_schedule import SQLiteScheduleRepository
@@ -41,6 +46,7 @@ SERVICE_CAPABILITIES = [
     "schedule-v1",
     "schedule-proposals",
     "reminders-v1",
+    "chronos-log-v1",
 ]
 
 
@@ -356,6 +362,8 @@ def main() -> int:
     service.import_legacy_timeline_tasks(timeline_repository.list_tasks())
     proposal_repository = SQLiteProposalRepository(args.database)
     reminder_service = ReminderService(SQLiteReminderRepository(args.database))
+    chronos_log_service = ChronosLogService(SQLiteChronosLogRepository(args.database))
+    operation_store = OperationStore(SQLiteAgentOperationRepository(args.database))
     memory_repository = SQLiteAgentMemoryRepository(args.database)
     memory_service = AgentMemoryService(memory_repository, args.agent_import_dir)
     agent_config = load_agent_config(args.agent_config)
@@ -370,7 +378,15 @@ def main() -> int:
     proposal_service = ProposalService(
         service, proposal_repository, command_parser, reminder_service
     )
-    v1_router = V1Router(service, proposal_service, memory_service, reminder_service)
+    migrate_proposal_history(proposal_service.list(), chronos_log_service)
+    v1_router = V1Router(
+        service,
+        proposal_service,
+        memory_service,
+        reminder_service,
+        chronos_log_service,
+        operation_store,
+    )
     root = Path(__file__).resolve().parents[3] / "web" / "dist"
     if not root.is_dir():
         raise SystemExit("Frontend build not found. Run: npm --prefix web run build")

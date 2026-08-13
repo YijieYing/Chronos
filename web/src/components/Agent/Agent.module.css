@@ -82,6 +82,41 @@
   backdrop-filter: blur(3px);
 }
 
+.logPeek {
+  position: fixed;
+  z-index: 19;
+  right: 24px;
+  bottom: 88px;
+  width: min(340px, calc(100vw - 40px));
+  padding: 13px 14px;
+  border: 1px solid rgba(68, 110, 94, 0.18);
+  border-radius: 13px;
+  background: rgba(246, 250, 247, 0.94);
+  box-shadow: 0 14px 40px rgba(43, 68, 59, 0.13);
+  backdrop-filter: blur(18px);
+}
+
+.logPeek span {
+  color: #24805e;
+  font: 750 8px/1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.11em;
+}
+
+.logPeek p {
+  margin: 8px 0 10px;
+  color: #344941;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.logPeek button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #35745d;
+  font: 700 9px/1 "SFMono-Regular", Consolas, monospace;
+}
+
 .logDrawer {
   position: fixed;
   z-index: 30;
@@ -114,6 +149,12 @@
   color: #20332c;
   font-size: 24px;
   font-weight: 560;
+}
+
+.logSummary {
+  margin: 7px 0 0;
+  color: #7b8b85;
+  font-size: 10px;
 }
 
 .iconButton {
@@ -160,17 +201,30 @@
   color: #4e7768;
 }
 
-.logMeta span[data-status="rejected"],
-.logMeta span[data-status="restored"] {
+.logMeta span[data-event="operation_rejected"],
+.logMeta span[data-event="operation_failed"],
+.logMeta span[data-event="undo"],
+.logMeta span[data-event="restore"] {
   color: #7e6754;
   background: #f4eee8;
 }
 
-.logRequest {
+.logMessage {
   margin: 13px 0;
   color: #263831;
   font-size: 13px;
   font-weight: 650;
+  line-height: 1.5;
+}
+
+.logReferences { display: flex; flex-wrap: wrap; gap: 6px; }
+.logReferences button {
+  padding: 6px 8px;
+  border: 1px solid #cedbd5;
+  border-radius: 7px;
+  background: #f5f8f6;
+  color: #4a7162;
+  font: 650 8px/1 "SFMono-Regular", Consolas, monospace;
 }
 
 .changeSet {

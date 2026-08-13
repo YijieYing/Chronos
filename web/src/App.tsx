@@ -15,7 +15,7 @@ import {
 } from "./monitor/MonitorAdapter";
 import { useLiveMonitor } from "./monitor/useLiveMonitor";
 import { useTimelineStore } from "./state/timelineStore";
-import type { TimelineTask } from "./types";
+import type { TimelineReference, TimelineTask } from "./types";
 import styles from "./App.module.css";
 
 const fiveMinutes = 5 * 60_000;
@@ -72,6 +72,28 @@ export default function App() {
     setComposerOpen(true);
   }
 
+  function focusReference(reference: TimelineReference) {
+    if (reference.type === "time_range") {
+      timeline.focusTime((reference.start + reference.end) / 2);
+      setLogOpen(false);
+      return;
+    }
+    if (reference.type === "task") {
+      const task = timeline.tasks.find(
+        (item) => item.id === reference.id || item.seriesId === reference.id,
+      );
+      if (task) timeline.focusTime(task.start);
+    } else {
+      const reminder = timeline.reminders.find((item) => item.id === reference.id);
+      if (reminder) {
+        timeline.focusTime(reminder.trigger.type === "time"
+          ? reminder.trigger.at
+          : (reminder.trigger.start + reminder.trigger.end) / 2);
+      }
+    }
+    setLogOpen(false);
+  }
+
   return (
     <main className={styles.app}>
       <header className={styles.header}>
@@ -109,8 +131,8 @@ export default function App() {
           <button onClick={() => openComposer()}>＋ TASK</button>
           <button onClick={() => openComposer(Date.now(), "reminder")}>◇ REMINDER</button>
           <button onClick={() => setLogOpen(true)}>
-            OPEN CHRONOS LOG
-            {timeline.logs.length > 0 && <em>{timeline.logs.length}</em>}
+            CHRONOS LOG
+            {timeline.pendingOperationCount > 0 && <em>{timeline.pendingOperationCount}</em>}
           </button>
         </div>
       </header>
@@ -149,7 +171,7 @@ export default function App() {
         open={overviewOpen}
         tasks={timeline.tasks}
         reminders={timeline.reminders}
-        logs={timeline.logs}
+        pendingOperationCount={timeline.pendingOperationCount}
         onClose={() => setOverviewOpen(false)}
         onOpenLog={() => setLogOpen(true)}
         onSelectTask={timeline.focusTime}
@@ -172,10 +194,13 @@ export default function App() {
         onDelete={timeline.deleteTask}
       />
       <ChronosLog
-        open={logOpen}
+        expanded={logOpen}
         entries={timeline.logs}
+        pendingCount={timeline.pendingOperationCount}
+        onOpen={() => setLogOpen(true)}
         onClose={() => setLogOpen(false)}
         onRestore={timeline.restoreLog}
+        onReference={focusReference}
       />
       <MemorySync open={memoryOpen} onClose={() => setMemoryOpen(false)} />
     </main>

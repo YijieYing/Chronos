@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import type { ChronosLogEntry, Reminder, TimelineTask } from "../../types";
+import type { Reminder, TimelineTask } from "../../types";
 import { spectrumColor } from "../Timeline/waveMath";
 import styles from "./OverviewMap.module.css";
 
@@ -14,7 +14,7 @@ interface OverviewMapProps {
   open: boolean;
   tasks: TimelineTask[];
   reminders: Reminder[];
-  logs: ChronosLogEntry[];
+  pendingOperationCount: number;
   onClose: () => void;
   onOpenLog: () => void;
   onSelectTask: (time: number) => void;
@@ -29,7 +29,7 @@ export function OverviewMap({
   open,
   tasks,
   reminders,
-  logs,
+  pendingOperationCount,
   onClose,
   onOpenLog,
   onSelectTask,
@@ -66,8 +66,8 @@ export function OverviewMap({
             </div>
             <div className={styles.headerActions}>
               <button onClick={onOpenLog}>
-                ADJUSTMENT RECORD
-                {logs.length > 0 && <b>{logs.length}</b>}
+                CHRONOS LOG
+                {pendingOperationCount > 0 && <b>{pendingOperationCount}</b>}
               </button>
               <button className={styles.closeButton} onClick={onClose}>×</button>
             </div>

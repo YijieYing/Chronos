@@ -19,7 +19,8 @@ import type {
   TimelineTask,
   Reminder,
 } from "../types";
-import { createReminder, loadReminders } from "../api/reminders";
+import { createReminder, deleteReminder, loadReminders } from "../api/reminders";
+import { appendChronosLog, loadChronosLog } from "../api/chronosLog";
 
 const minute = 60_000;
 
@@ -28,6 +29,7 @@ export function useTimelineStore() {
   const [commands, setCommands] = useState<AgentCommand[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [logs, setLogs] = useState<ChronosLogEntry[]>([]);
+  const [pendingOperationCount, setPendingOperationCount] = useState(0);
   const [focusTarget, setFocusTarget] = useState<number | null>(null);
   const [storageStatus, setStorageStatus] =
     useState<"loading" | "ready" | "error">("loading");
@@ -36,8 +38,10 @@ export function useTimelineStore() {
 
   useEffect(() => {
     let active = true;
-    Promise.allSettled([loadTimelineTasks(), loadProposals(), loadReminders()])
-      .then(([taskResult, proposalResult, reminderResult]) => {
+    Promise.allSettled([
+      loadTimelineTasks(), loadProposals(), loadReminders(), loadChronosLog(),
+    ])
+      .then(([taskResult, proposalResult, reminderResult, logResult]) => {
         if (!active) return;
         if (taskResult.status === "fulfilled") {
           if (!hasLocalMutation.current) setTasks(taskResult.value);
@@ -47,15 +51,19 @@ export function useTimelineStore() {
         }
         if (proposalResult.status === "fulfilled") {
           const latestPending = proposalResult.value.find(
-            (proposal) => proposal.status === "pending",
+            (proposal) => proposal.status === "pending"
+              || proposal.status === "needs_clarification",
           );
           setCommands(latestPending ? [proposalToCommand(latestPending)] : []);
-          setLogs(proposalResult.value.map(proposalToLog));
         }
         if (reminderResult.status === "fulfilled") {
           setReminders(reminderResult.value);
         }
-        const optionalFailures = [proposalResult, reminderResult]
+        if (logResult.status === "fulfilled") {
+          setLogs(logResult.value.entries);
+          setPendingOperationCount(logResult.value.pendingCount);
+        }
+        const optionalFailures = [proposalResult, reminderResult, logResult]
           .filter((result) => result.status === "rejected")
           .map((result) => errorMessage(result.reason));
         if (taskResult.status === "fulfilled") {
@@ -92,23 +100,18 @@ export function useTimelineStore() {
       .then((storedTasks) => {
         setTasks(storedTasks);
         confirmStorage();
+        recordLogBestEffort({
+          eventType: "operation_completed",
+          message: `Created ${task.title} at ${formatTime(task.start)}`,
+          references: [{ type: "task", id: task.id }],
+          metadata: { manual_action: "create_task" },
+        });
       })
       .catch((error: unknown) => {
         setTasks((current) => current.filter((item) => item.id !== task.id));
         reportStorageError(error);
       });
     setFocusTarget(task.start);
-    setLogs((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        time: Date.now(),
-        request: source === "agent" ? "Agent task insertion" : "Create task",
-        response: `Added ${task.title} at ${formatTime(task.start)}`,
-        status: "applied",
-        addedTaskId: task.id,
-      },
-    ]);
     return task;
   }
 
@@ -133,6 +136,12 @@ export function useTimelineStore() {
       .then((storedTasks) => {
         setTasks(storedTasks);
         confirmStorage();
+        recordLogBestEffort({
+          eventType: start === previous.start ? "manual_task_resize" : "manual_task_move",
+          message: `${previous.title}: ${formatTime(previous.start)}–${formatTime(previous.end)} → ${formatTime(start)}–${formatTime(end)}`,
+          references: [{ type: "task", id: baseId }],
+          metadata: { previous_task: previous },
+        });
       })
       .catch((error: unknown) => {
         if (!occurrence.seriesId) {
@@ -142,18 +151,6 @@ export function useTimelineStore() {
         }
         reportStorageError(error);
       });
-    setLogs((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        time: Date.now(),
-        request: "Overview timeline adjustment",
-        response: `${previous.title}: ${formatTime(previous.start)}–${formatTime(previous.end)} → ${formatTime(start)}–${formatTime(end)}`,
-        status: "applied",
-        changedTaskId: baseId,
-        previousTask: previous,
-      },
-    ]);
   }
 
   function updateTask(taskId: string, input: NewTaskInput) {
@@ -202,6 +199,12 @@ export function useTimelineStore() {
       .then((storedTasks) => {
         setTasks(storedTasks);
         confirmStorage();
+        recordLogBestEffort({
+          eventType: "operation_completed",
+          message: `Updated ${previous.title} → ${updated.title}`,
+          references: [{ type: "task", id: baseId }],
+          metadata: { manual_action: "update_task", previous_task: previous },
+        });
       })
       .catch((error: unknown) => {
         if (!occurrence.seriesId) {
@@ -212,18 +215,6 @@ export function useTimelineStore() {
         reportStorageError(error);
       });
     setFocusTarget(input.start);
-    setLogs((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        time: Date.now(),
-        request: previous.recurrence ? "Edit recurring task series" : "Edit task",
-        response: `Updated ${previous.title} → ${updated.title}`,
-        status: "applied",
-        changedTaskId: baseId,
-        previousTask: previous,
-      },
-    ]);
   }
 
   function deleteTask(taskId: string) {
@@ -245,6 +236,12 @@ export function useTimelineStore() {
       .then((storedTasks) => {
         setTasks(storedTasks);
         confirmStorage();
+        recordLogBestEffort({
+          eventType: "operation_completed",
+          message: `Deleted ${previous.title}`,
+          references: [{ type: "task", id: baseId }],
+          metadata: { manual_action: "delete_task", deleted_task: previous },
+        });
       })
       .catch((error: unknown) => {
         setTasks((current) =>
@@ -254,17 +251,6 @@ export function useTimelineStore() {
         );
         reportStorageError(error);
       });
-    setLogs((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        time: Date.now(),
-        request: previous.recurrence ? "Delete recurring task series" : "Delete task",
-        response: `Deleted ${previous.title}`,
-        status: "applied",
-        deletedTask: previous,
-      },
-    ]);
   }
 
   function focusTime(time: number) {
@@ -277,6 +263,12 @@ export function useTimelineStore() {
       .then((stored) => {
         setReminders((current) => current.map((item) => item.id === stored.id ? stored : item));
         confirmStorage();
+        recordLogBestEffort({
+          eventType: "operation_completed",
+          message: `Created reminder ${stored.title}`,
+          references: [{ type: "reminder", id: stored.id }],
+          metadata: { manual_action: "create_reminder" },
+        });
       })
       .catch((error) => {
         setReminders((current) => current.filter((item) => item.id !== reminder.id));
@@ -300,7 +292,7 @@ export function useTimelineStore() {
       } else if (proposal.results.length) {
         setFocusTarget(proposal.results[0].start);
       }
-      setLogs((current) => [...current, proposalToLog(proposal)]);
+      await refreshLog();
       confirmStorage();
     } catch (error) {
       reportStorageError(error);
@@ -326,11 +318,7 @@ export function useTimelineStore() {
         setTasks(storedTasks);
         setReminders(storedReminders);
       }
-      setLogs((current) =>
-        current.map((item) =>
-          item.id === id ? { ...item, status: accepted ? "applied" : "rejected" } : item,
-        ),
-      );
+      await refreshLog();
       confirmStorage();
     } catch (error) {
       setCommands((current) =>
@@ -345,93 +333,68 @@ export function useTimelineStore() {
   async function restoreLog(id: string) {
     const entry = logs.find((item) => item.id === id);
     if (!entry) return;
-    if (entry.proposalId) {
+    if (entry.operationId && entry.eventType === "operation_completed") {
       try {
-        await restoreProposal(entry.proposalId);
+        await restoreProposal(entry.operationId);
         const [storedTasks, storedReminders] = await Promise.all([
           loadTimelineTasks(),
           loadReminders(),
         ]);
         setTasks(storedTasks);
         setReminders(storedReminders);
-        setLogs((current) =>
-          current.map((item) =>
-            item.id === id ? { ...item, status: "restored" } : item,
-          ),
-        );
+        await refreshLog();
         confirmStorage();
       } catch (error) {
         reportStorageError(error);
       }
       return;
     }
-    if (entry.addedTaskId) {
-      const addedTask = tasks.find((task) => task.id === entry.addedTaskId);
-      setTasks((current) => current.filter((task) => task.id !== entry.addedTaskId));
-      hasLocalMutation.current = true;
-      deleteTimelineTask(entry.addedTaskId)
-        .then(loadTimelineTasks)
-        .then((storedTasks) => {
-          setTasks(storedTasks);
-          confirmStorage();
-        })
-        .catch((error: unknown) => {
-          if (addedTask) {
-            setTasks((current) =>
-              current.some((task) => task.id === addedTask.id)
-                ? current
-                : [...current, addedTask],
-            );
-          }
-          reportStorageError(error);
-        });
+    const action = entry.metadata.manual_action;
+    const reference = entry.references[0];
+    try {
+      if (action === "create_task" && reference?.type === "task") {
+        await deleteTimelineTask(reference.id);
+        setTasks(await loadTimelineTasks());
+      } else if (action === "create_reminder" && reference?.type === "reminder") {
+        await deleteReminder(reference.id);
+        setReminders(await loadReminders());
+      } else if (action === "delete_task" && isTimelineTask(entry.metadata.deleted_task)) {
+        setTasks(await createTimelineTask(entry.metadata.deleted_task));
+      } else if (
+        (action === "update_task" || entry.eventType.startsWith("manual_task_"))
+        && isTimelineTask(entry.metadata.previous_task)
+      ) {
+        setTasks(await saveTimelineTask(entry.metadata.previous_task));
+      } else {
+        return;
+      }
+      await recordLog({
+        eventType: "undo",
+        message: `Undid: ${entry.message}`,
+        references: entry.references,
+        metadata: { restored_log_entry_id: entry.id },
+      });
+      confirmStorage();
+    } catch (error) {
+      reportStorageError(error);
     }
-    if (entry.changedTaskId && entry.previousTask) {
-      const changedTask = tasks.find((task) => task.id === entry.changedTaskId);
-      setTasks((current) =>
-        current.map((task) =>
-          task.id === entry.changedTaskId ? entry.previousTask! : task,
-        ),
-      );
-      hasLocalMutation.current = true;
-      saveTimelineTask(entry.previousTask)
-        .then((storedTasks) => {
-          setTasks(storedTasks);
-          confirmStorage();
-        })
-        .catch((error: unknown) => {
-          if (changedTask) {
-            setTasks((current) =>
-              current.map((task) =>
-                task.id === changedTask.id ? changedTask : task,
-              ),
-            );
-          }
-          reportStorageError(error);
-        });
-    }
-    if (entry.deletedTask) {
-      setTasks((current) =>
-        current.some((task) => task.id === entry.deletedTask!.id)
-          ? current
-          : [...current, entry.deletedTask!],
-      );
-      hasLocalMutation.current = true;
-      saveTimelineTask(entry.deletedTask)
-        .then((storedTasks) => {
-          setTasks(storedTasks);
-          confirmStorage();
-        })
-        .catch((error: unknown) => {
-          setTasks((current) =>
-            current.filter((task) => task.id !== entry.deletedTask!.id),
-          );
-          reportStorageError(error);
-        });
-    }
-    setLogs((current) =>
-      current.map((item) => (item.id === id ? { ...item, status: "restored" } : item)),
-    );
+  }
+
+  async function recordLog(input: Parameters<typeof appendChronosLog>[0]) {
+    const entry = await appendChronosLog(input);
+    setLogs((current) => [entry, ...current]);
+  }
+
+  function recordLogBestEffort(input: Parameters<typeof appendChronosLog>[0]) {
+    void recordLog(input).catch((error) => {
+      console.error("Chronos Log append failed", error);
+    });
+  }
+
+  async function refreshLog() {
+    const result = await loadChronosLog();
+    setLogs(result.entries);
+    setPendingOperationCount(result.pendingCount);
   }
 
   function reportStorageError(error: unknown) {
@@ -449,6 +412,7 @@ export function useTimelineStore() {
     reminders,
     commands,
     logs,
+    pendingOperationCount,
     storageStatus,
     storageError,
     focusTarget,
@@ -462,6 +426,15 @@ export function useTimelineStore() {
     resolveCommand,
     restoreLog,
   };
+}
+
+function isTimelineTask(value: unknown): value is TimelineTask {
+  if (!value || typeof value !== "object") return false;
+  const task = value as Partial<TimelineTask>;
+  return typeof task.id === "string"
+    && typeof task.title === "string"
+    && typeof task.start === "number"
+    && typeof task.end === "number";
 }
 
 function errorMessage(error: unknown) {
@@ -522,39 +495,6 @@ function proposalToCommand(proposal: ScheduleProposal): AgentCommand {
     proposedTask: proposal.task ?? undefined,
     contextUsed: proposal.contextUsed.map((item) => item.content),
     canResolve: proposal.status === "pending",
-  };
-}
-
-function proposalToLog(proposal: ScheduleProposal): ChronosLogEntry {
-  const resultSummary = proposal.results.length
-    ? proposal.results
-        .map((task) => `${formatTime(task.start)} ${task.title}`)
-        .join("；")
-    : "";
-  return {
-    id: proposal.id,
-    time: proposal.createdAt,
-    request: proposal.request,
-    response: [
-      ...proposal.parserWarnings,
-      proposal.explanation.join(" "),
-      resultSummary,
-    ].filter(Boolean).join(" "),
-    status:
-      proposal.status === "informational"
-        ? "info"
-        : proposal.status === "pending"
-        ? "proposed"
-        : proposal.status === "needs_clarification"
-          ? "info"
-          : proposal.status === "accepted"
-          ? "applied"
-          : proposal.status === "restored"
-            ? "restored"
-            : "rejected",
-    addedTaskId: proposal.changes[0]?.operation === "add" ? proposal.task?.id : undefined,
-    proposalId: proposal.id,
-    contextUsed: proposal.contextUsed.map((item) => item.content),
   };
 }
 

@@ -5,7 +5,9 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from zoneinfo import ZoneInfo
 
+from chronos.agent.log_service import ChronosLogService
 from chronos.api.routes.v1 import V1Router
+from chronos.infrastructure.sqlite_chronos_log import SQLiteChronosLogRepository
 from chronos.infrastructure.sqlite_proposals import SQLiteProposalRepository
 from chronos.infrastructure.sqlite_reminders import SQLiteReminderRepository
 from chronos.infrastructure.sqlite_schedule import SQLiteScheduleRepository
@@ -99,6 +101,31 @@ class ScheduleV1Test(TestCase):
         self.assertIsNone(envelope["error"])
         self.assertEqual(rejected_envelope["data"]["status"], "rejected")
         self.assertEqual(self.repository.list_tasks(), [])
+
+    def test_proposal_lifecycle_is_appended_to_chronos_log(self) -> None:
+        database = Path(self.temporary.name) / "chronos.sqlite3"
+        chronos_log = ChronosLogService(SQLiteChronosLogRepository(database))
+        router = V1Router(self.schedule, self.proposals, chronos_log=chronos_log)
+
+        _, envelope = router.dispatch(
+            "POST", "/api/v1/proposals", {"text": "明天下午安排30分钟阅读"}
+        )
+        proposal = envelope["data"]
+        assert isinstance(proposal, dict)
+        router.dispatch("POST", f"/api/v1/proposals/{proposal['proposal_id']}/reject")
+        status, log_envelope = router.dispatch("GET", "/api/v1/chronos-log")
+        data = log_envelope["data"]
+        assert isinstance(data, dict)
+
+        self.assertEqual(status.value, 200)
+        self.assertEqual(
+            [entry["event_type"] for entry in data["entries"]],
+            ["operation_rejected", "proposal_created", "user_prompt"],
+        )
+        self.assertTrue(
+            all(entry["operation_id"] == proposal["proposal_id"] for entry in data["entries"])
+        )
+        self.assertEqual(data["pending_count"], 0)
 
     def test_v1_router_creates_and_updates_an_independent_reminder(self) -> None:
         database = Path(self.temporary.name) / "chronos.sqlite3"
