@@ -1,5 +1,9 @@
 # Chronos architecture
 
+The staged migration from the current proposal flow to the Compiler / Operation / Runtime foundation
+is tracked in [agent-interaction-audit.md](agent-interaction-audit.md). That audit distinguishes
+existing behavior from target contracts and is the entry point for each implementation phase.
+
 Chronos starts as a modular monolith with three independent domain boundaries. This keeps local
 deployment simple without allowing monitoring, scheduling, and automatic adaptation to collapse
 into one model.
