@@ -17,6 +17,9 @@ Implementation progress:
 - Phase 5 completed: active Projection read model/API, legacy Proposal projection adapter,
   independent frontend Projection Store, and dedicated proposed/incomplete Task, Reminder, and range
   renderers whose lifecycle is independent from Chronos Log visibility.
+- Phase 6 completed: strict `ChronosCompiler.compile(InteractionContext)` port and result union,
+  versioned CompilerResult serialization, pure legacy Proposal compatibility compiler, and request
+  wiring that persists Compiler-owned AgentOperation snapshots without executing them.
 - Operation/Log foundations now bridge the legacy proposal workflow; Compiler and Runtime wiring
   still begins in later phases.
 
@@ -188,6 +191,13 @@ Define `ChronosCompiler.compile(InteractionContext) -> CompilerResult` before mo
 Wrap the existing provider, provenance validation, and memory retrieval behind that port. Replace
 `AgentInterpretation` gradually with full Operation snapshots; retain a compatibility compiler for
 existing deterministic commands. Compiler output never calls repositories.
+
+Phase 6 establishes the port and strict clarification/proposal/informational result variants. The
+compatibility compiler translates an already-planned legacy Proposal into typed TimelineOperation,
+scope, references, projections, and a complete AgentOperation snapshot. It is deterministic and has
+no repository, planner, Schedule, Reminder, or Runtime dependency. The API application layer owns
+persistence and synchronizes current Accept/Reject lifecycle states. Moving semantic understanding
+and memory retrieval behind this port remains Phase 7.
 
 ### Phases 8–9 — Clarification and proposal UX
 

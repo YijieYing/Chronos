@@ -187,6 +187,7 @@ class ScheduleV1Test(TestCase):
         router = V1Router(
             self.schedule,
             self.proposals,
+            operation_store=operation_store,
             projections=ProjectionService(operation_store),
         )
         _, envelope = router.dispatch(
@@ -203,8 +204,16 @@ class ScheduleV1Test(TestCase):
             projection_data["projections"][0]["operation_id"],
             proposal["proposal_id"],
         )
+        operation = operation_store.get(str(proposal["proposal_id"]))
+        self.assertEqual(operation.state.value, "proposed")
+        self.assertEqual(operation.compiled_operations[0].type, "create_task")
+        self.assertFalse(operation.projections[0].metadata.get("legacy_adapter", False))
 
         router.dispatch("POST", f"/api/v1/proposals/{proposal['proposal_id']}/reject")
+        self.assertEqual(
+            operation_store.get(str(proposal["proposal_id"])).state.value,
+            "rejected",
+        )
         _, projected = router.dispatch("GET", "/api/v1/timeline-projections")
         projection_data = projected["data"]
         assert isinstance(projection_data, dict)
@@ -218,6 +227,10 @@ class ScheduleV1Test(TestCase):
         router.dispatch(
             "POST",
             f"/api/v1/proposals/{accepted_proposal['proposal_id']}/accept",
+        )
+        self.assertEqual(
+            operation_store.get(str(accepted_proposal["proposal_id"])).state.value,
+            "completed",
         )
         _, projected = router.dispatch("GET", "/api/v1/timeline-projections")
         projection_data = projected["data"]

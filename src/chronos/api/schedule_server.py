@@ -49,6 +49,7 @@ SERVICE_CAPABILITIES = [
     "reminders-v1",
     "chronos-log-v1",
     "timeline-projections-v1",
+    "chronos-compiler-v1",
 ]
 
 

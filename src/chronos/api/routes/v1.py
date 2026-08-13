@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 
-from chronos.agent.log_service import ChronosLogService
+from chronos.agent.compiler import ChronosCompiler, LegacyProposalCompiler
 from chronos.agent.legacy_log import proposal_references
-from chronos.agent.models import InteractionContext, LogEventType, TimelineReference
+from chronos.agent.log_service import ChronosLogService
+from chronos.agent.models import (
+    InteractionContext,
+    LogEventType,
+    OperationState,
+    TimelineReference,
+)
 from chronos.agent.projection_service import ProjectionService
 from chronos.agent.serialization import log_entry_to_dict, projection_to_dict
 from chronos.agent.service import OperationStore
@@ -30,6 +37,7 @@ class V1Router:
         chronos_log: ChronosLogService | None = None,
         operation_store: OperationStore | None = None,
         projections: ProjectionService | None = None,
+        compiler: ChronosCompiler | None = None,
     ) -> None:
         self._schedule = schedule
         self._proposals = proposals
@@ -38,6 +46,7 @@ class V1Router:
         self._chronos_log = chronos_log
         self._operation_store = operation_store
         self._projections = projections
+        self._compiler = compiler or LegacyProposalCompiler()
 
     def dispatch(
         self,
@@ -195,6 +204,7 @@ class V1Router:
             proposal = self._proposals.attach_interaction_context(
                 str(proposal["proposal_id"]), _interaction_context_dict(context)
             )
+            self._compile_proposal(proposal, text, context)
             self._log_proposal_created(proposal, text)
             return HTTPStatus.CREATED, success(proposal)
         proposal_prefix = "/api/v1/proposals/"
@@ -205,6 +215,7 @@ class V1Router:
             if method == "POST" and suffix.endswith("/accept"):
                 proposal_id = suffix.removesuffix("/accept")
                 proposal = self._proposals.accept(proposal_id)
+                self._complete_operation(proposal_id)
                 self._log_proposal_event(
                     proposal, LogEventType.OPERATION_COMPLETED, "已应用时间轴调整。"
                 )
@@ -212,6 +223,7 @@ class V1Router:
             if method == "POST" and suffix.endswith("/reject"):
                 proposal_id = suffix.removesuffix("/reject")
                 proposal = self._proposals.reject(proposal_id)
+                self._reject_operation(proposal_id)
                 self._log_proposal_event(
                     proposal, LogEventType.OPERATION_REJECTED, "已拒绝时间轴提案。"
                 )
@@ -259,6 +271,44 @@ class V1Router:
             operation_id=proposal_id,
             references=references,
             metadata={"proposal_status": status},
+        )
+
+    def _compile_proposal(
+        self,
+        proposal: dict[str, object],
+        text: str,
+        context: InteractionContext,
+    ) -> None:
+        if self._operation_store is None:
+            return
+        compile_context = replace(
+            context,
+            user_input=text,
+            timeline_context={"legacy_proposal": proposal},
+        )
+        result = self._compiler.compile(compile_context)
+        self._operation_store.create_snapshot(result.operation)
+
+    def _complete_operation(self, operation_id: str) -> None:
+        if self._operation_store is None:
+            return
+        operation = self._operation_store.get(operation_id)
+        approved = self._operation_store.transition(
+            operation_id, OperationState.APPROVED, expected_version=operation.version
+        )
+        executing = self._operation_store.transition(
+            operation_id, OperationState.EXECUTING, expected_version=approved.version
+        )
+        self._operation_store.transition(
+            operation_id, OperationState.COMPLETED, expected_version=executing.version
+        )
+
+    def _reject_operation(self, operation_id: str) -> None:
+        if self._operation_store is None:
+            return
+        operation = self._operation_store.get(operation_id)
+        self._operation_store.transition(
+            operation_id, OperationState.REJECTED, expected_version=operation.version
         )
 
     def _log_proposal_event(

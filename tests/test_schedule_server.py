@@ -9,6 +9,7 @@ class ScheduleServerErrorTest(TestCase):
         self.assertIn("reminders-v1", SERVICE_CAPABILITIES)
         self.assertIn("chronos-log-v1", SERVICE_CAPABILITIES)
         self.assertIn("timeline-projections-v1", SERVICE_CAPABILITIES)
+        self.assertIn("chronos-compiler-v1", SERVICE_CAPABILITIES)
 
     def test_runtime_provider_error_becomes_structured_bad_gateway(self) -> None:
         handler = object.__new__(ScheduleRequestHandler)

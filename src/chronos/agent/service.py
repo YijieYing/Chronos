@@ -50,6 +50,12 @@ class OperationStore:
         self._repository.create(operation)
         return operation
 
+    def create_snapshot(self, operation: AgentOperation) -> AgentOperation:
+        if operation.version != 1:
+            raise ValueError("initial Operation snapshot must have version 1")
+        self._repository.create(operation)
+        return operation
+
     def get(self, operation_id: str) -> AgentOperation:
         operation = self._repository.get(operation_id)
         if operation is None:
