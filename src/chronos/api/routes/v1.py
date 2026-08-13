@@ -6,6 +6,7 @@ from http import HTTPStatus
 
 from chronos.agent.compiler import (
     ChronosCompiler,
+    ClarificationCompilerResult,
     CompilerResult,
     LegacyProposalCompiler,
 )
@@ -82,8 +83,33 @@ class V1Router:
                     for item in self._proposals.list()
                     if item.get("status") in {"pending", "needs_clarification"}
                 )
+                pending_operations = (
+                    [
+                        {
+                            "id": item.id,
+                            "state": item.state.value,
+                            "summary": item.intent.summary,
+                            "questions": [
+                                {
+                                    "field": question.field,
+                                    "question": question.question,
+                                    "options": list(question.options),
+                                }
+                                for question in item.unresolved_questions
+                            ],
+                            "created_at": item.created_at.isoformat(),
+                        }
+                        for item in self._operation_store.pending()
+                    ]
+                    if self._operation_store is not None
+                    else []
+                )
                 return HTTPStatus.OK, success(
-                    {"entries": entries, "pending_count": len(pending_ids)}
+                    {
+                        "entries": entries,
+                        "pending_count": len(pending_ids),
+                        "pending_operations": pending_operations,
+                    }
                 )
             if method == "POST":
                 entry = self._chronos_log.append(
@@ -256,7 +282,68 @@ class V1Router:
                     proposal, LogEventType.UNDO, "已恢复此次调整前的状态。"
                 )
                 return HTTPStatus.OK, success(proposal)
+        operation_prefix = "/api/v1/operations/"
+        if method == "POST" and path.startswith(operation_prefix) and path.endswith("/clarify"):
+            operation_id = path.removeprefix(operation_prefix).removesuffix("/clarify")
+            return HTTPStatus.OK, success(
+                self._answer_clarification(operation_id, payload)
+            )
         raise KeyError(path)
+
+    def _answer_clarification(
+        self, operation_id: str, payload: dict[str, object]
+    ) -> dict[str, object]:
+        if self._semantic_compiler is None or self._operation_store is None:
+            raise RuntimeError("semantic Compiler and OperationStore are required")
+        current = self._operation_store.get(operation_id)
+        if current.state != OperationState.AWAITING_CLARIFICATION:
+            raise ValueError("operation is not awaiting clarification")
+        answer = str(payload.get("answer", "")).strip()
+        context = _interaction_context(payload.get("interaction_context"))
+        if not answer and context.selection is None:
+            raise ValueError("clarification answer or Timeline selection is required")
+        source = current.intent.source_text or ""
+        combined = f"{source}\n\n用户补充：{answer or '使用当前选择的时间范围'}"
+        compile_context = replace(
+            context,
+            user_input=combined,
+            timeline_context={
+                "tasks": tuple(self._schedule.list_tasks()),
+                "timezone": self._schedule.settings()["timezone"],
+                "operation_id": current.id,
+                "operation_version": current.version + 1,
+                "operation_created_at": current.created_at,
+            },
+        )
+        compiled = self._semantic_compiler.compile(compile_context)
+        proposal = self._proposals.create_from_compiler(
+            compiled, datetime.fromtimestamp(context.current_time / 1000, UTC)
+        )
+        proposal = self._proposals.attach_interaction_context(
+            operation_id, _interaction_context_dict(context)
+        )
+        refreshed = compiled.operation
+        self._operation_store.save_snapshot(refreshed, expected_version=current.version)
+        if self._chronos_log is not None:
+            self._chronos_log.append(
+                LogEventType.CLARIFICATION_ANSWERED,
+                answer or "使用了选中的时间范围。",
+                operation_id=operation_id,
+                references=(context.selection,) if context.selection else (),
+            )
+            event_type = (
+                LogEventType.CLARIFICATION_REQUESTED
+                if isinstance(compiled, ClarificationCompilerResult)
+                else LogEventType.PROPOSAL_UPDATED
+            )
+            self._chronos_log.append(
+                event_type,
+                compiled.message,
+                operation_id=operation_id,
+                references=compiled.operation.references,
+                metadata={"operation_version": refreshed.version},
+            )
+        return proposal
 
     def _log_proposal_created(self, proposal: dict[str, object], text: str) -> None:
         if self._chronos_log is None:

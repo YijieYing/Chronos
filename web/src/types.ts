@@ -129,6 +129,14 @@ export interface ChronosLogEntry {
   metadata: Record<string, unknown>;
 }
 
+export interface PendingAgentOperation {
+  id: string;
+  state: "awaiting_clarification" | "proposed" | "failed";
+  summary: string;
+  questions: Array<{ field: string; question: string; options: string[] }>;
+  createdAt: number;
+}
+
 export interface NewTaskInput {
   title: string;
   start: number;

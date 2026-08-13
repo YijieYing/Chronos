@@ -1,23 +1,29 @@
+import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import type { ChronosLogEntry, TimelineReference } from "../../types";
+import type {
+  ChronosLogEntry,
+  PendingAgentOperation,
+  TimelineReference,
+  TimelineSelection,
+} from "../../types";
 import styles from "./Agent.module.css";
 
 interface ChronosLogProps {
   expanded: boolean;
   entries: ChronosLogEntry[];
   pendingCount: number;
+  pendingOperations: PendingAgentOperation[];
+  selection: TimelineSelection | null;
   onOpen: () => void;
   onClose: () => void;
   onRestore: (id: string) => void;
   onReference: (reference: TimelineReference) => void;
+  onAnswer: (
+    operationId: string,
+    answer: string,
+    selection: TimelineSelection | null,
+  ) => Promise<void>;
 }
-
-const actionableEvents = new Set([
-  "clarification_requested",
-  "proposal_created",
-  "proposal_updated",
-  "operation_failed",
-]);
 
 const formatTime = (value: number) =>
   new Intl.DateTimeFormat("zh-CN", {
@@ -29,14 +35,23 @@ export function ChronosLog({
   expanded,
   entries,
   pendingCount,
+  pendingOperations,
+  selection,
   onOpen,
   onClose,
   onRestore,
   onReference,
+  onAnswer,
 }: ChronosLogProps) {
-  const peekEntry = pendingCount > 0
-    ? entries.find((entry) => actionableEvents.has(entry.eventType))
-    : undefined;
+  const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
+  const [answer, setAnswer] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const clarifications = pendingOperations.filter(
+    (operation) => operation.state === "awaiting_clarification",
+  );
+  const active = clarifications.find((operation) => operation.id === activeOperationId)
+    ?? clarifications[0];
   const revertedOperationIds = new Set(
     entries
       .filter((entry) => entry.eventType === "undo" && entry.operationId)
@@ -50,16 +65,46 @@ export function ChronosLog({
 
   return (
     <AnimatePresence>
-      {!expanded && peekEntry && (
+      {!expanded && active && (
         <motion.aside
           className={styles.logPeek}
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 8 }}
         >
-          <span>{eventLabel(peekEntry.eventType)}</span>
-          <p>{peekEntry.message}</p>
-          <button onClick={onOpen}>OPEN LOG · {pendingCount}</button>
+          <span>CHRONOS · NEEDS INPUT</span>
+          <p>{active.questions[0]?.question ?? active.summary}</p>
+          {!!active.questions[0]?.options.length && (
+            <div className={styles.quickAnswers}>
+              {active.questions[0].options.map((option) => (
+                <button key={option} onClick={() => submit(active.id, option)}>{option}</button>
+              ))}
+            </div>
+          )}
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            void submit(active.id, answer);
+          }}>
+            <input
+              aria-label="回答 Chronos 澄清问题"
+              value={answer}
+              onChange={(event) => setAnswer(event.target.value)}
+              placeholder={selection?.type === "time_range" ? "输入回答，或使用已选时间范围" : "补充信息…"}
+              disabled={submitting}
+            />
+            <button disabled={submitting || (!answer.trim() && !selection)}>
+              {submitting ? "…" : selection?.type === "time_range" && !answer.trim() ? "USE RANGE" : "REPLY"}
+            </button>
+          </form>
+          {error && <output role="alert">{error}</output>}
+          <div className={styles.peekFooter}>
+            <button onClick={onOpen}>OPEN LOG · {pendingCount}</button>
+            {clarifications.length > 1 && (
+              <button onClick={() => cycleOperation(active.id)}>
+                NEXT · {clarifications.length}
+              </button>
+            )}
+          </div>
         </motion.aside>
       )}
       {expanded && (
@@ -91,6 +136,16 @@ export function ChronosLog({
             </header>
 
             <div className={styles.logList}>
+              {clarifications.map((operation) => (
+                <article className={styles.pendingOperation} key={operation.id}>
+                  <span>CHRONOS · NEEDS INPUT</span>
+                  <p>{operation.questions[0]?.question ?? operation.summary}</p>
+                  <button onClick={() => {
+                    setActiveOperationId(operation.id);
+                    onClose();
+                  }}>ANSWER</button>
+                </article>
+              ))}
               {entries.length === 0 ? (
                 <div className={styles.emptyLog}>Chronos 尚未记录时间轴事件。</div>
               ) : (
@@ -130,6 +185,28 @@ export function ChronosLog({
       )}
     </AnimatePresence>
   );
+
+  async function submit(operationId: string, value: string) {
+    if (submitting || (!value.trim() && !selection)) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onAnswer(operationId, value.trim(), selection);
+      setAnswer("");
+      setActiveOperationId(null);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function cycleOperation(currentId: string) {
+    const index = clarifications.findIndex((item) => item.id === currentId);
+    setActiveOperationId(clarifications[(index + 1) % clarifications.length].id);
+    setAnswer("");
+    setError(null);
+  }
 }
 
 function eventLabel(eventType: ChronosLogEntry["eventType"]) {

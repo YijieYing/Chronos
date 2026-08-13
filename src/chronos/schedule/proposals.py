@@ -130,7 +130,7 @@ class ProposalService:
                 intent=_agent_intent(operation.intent.kind),
                 tasks=(),
                 unresolved=tuple(
-                    UnresolvedField(item.field, item.question)
+                    UnresolvedField(item.field, item.question, item.options)
                     for item in operation.unresolved_questions
                 ),
                 assumptions=assumptions,
@@ -244,7 +244,11 @@ class ProposalService:
             "conflicts": [],
             "explanation": [item.question for item in interpretation.unresolved],
             "clarifications": [
-                {"field": item.field, "question": item.question}
+                {
+                    "field": item.field,
+                    "question": item.question,
+                    "options": list(item.options),
+                }
                 for item in interpretation.unresolved
             ],
             "assumptions": list(interpretation.assumptions),

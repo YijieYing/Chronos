@@ -58,6 +58,25 @@ export async function resolveProposal(
   return fromProposal(payload);
 }
 
+export async function answerClarification(
+  id: string,
+  answer: string,
+  selection: TimelineSelection | null,
+): Promise<ScheduleProposal> {
+  const payload = await apiRequest<ProposalPayload>(
+    `/api/v1/operations/${encodeURIComponent(id)}/clarify`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        answer,
+        interaction_context: { current_time: Date.now(), selection },
+      }),
+    },
+  );
+  return fromProposal(payload);
+}
+
 export async function restoreProposal(id: string): Promise<ScheduleProposal> {
   const payload = await apiRequest<ProposalPayload>(
     `/api/v1/proposals/${encodeURIComponent(id)}/restore`,

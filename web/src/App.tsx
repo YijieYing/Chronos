@@ -246,10 +246,13 @@ export default function App() {
         expanded={logOpen}
         entries={timeline.logs}
         pendingCount={timeline.pendingOperationCount}
+        pendingOperations={timeline.pendingOperations}
+        selection={timeline.selection}
         onOpen={() => setLogOpen(true)}
         onClose={() => setLogOpen(false)}
         onRestore={timeline.restoreLog}
         onReference={focusReference}
+        onAnswer={timeline.answerOperation}
       />
       <MemorySync open={memoryOpen} onClose={() => setMemoryOpen(false)} />
     </main>

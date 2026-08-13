@@ -1,5 +1,9 @@
 import { apiRequest } from "./client";
-import type { ChronosLogEntry, TimelineReference } from "../types";
+import type {
+  ChronosLogEntry,
+  PendingAgentOperation,
+  TimelineReference,
+} from "../types";
 
 interface LogEntryPayload {
   schema_version: number;
@@ -15,14 +19,29 @@ interface LogEntryPayload {
 export async function loadChronosLog(): Promise<{
   entries: ChronosLogEntry[];
   pendingCount: number;
+  pendingOperations: PendingAgentOperation[];
 }> {
   const result = await apiRequest<{
     entries: LogEntryPayload[];
     pending_count: number;
+    pending_operations: Array<{
+      id: string;
+      state: PendingAgentOperation["state"];
+      summary: string;
+      questions: PendingAgentOperation["questions"];
+      created_at: string;
+    }>;
   }>("/api/v1/chronos-log");
   return {
     entries: result.entries.map(fromPayload),
     pendingCount: result.pending_count,
+    pendingOperations: result.pending_operations.map((operation) => ({
+      id: operation.id,
+      state: operation.state,
+      summary: operation.summary,
+      questions: operation.questions,
+      createdAt: new Date(operation.created_at).getTime(),
+    })),
   };
 }
 

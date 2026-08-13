@@ -18,6 +18,7 @@ InterpretationIntent = Literal[
 class UnresolvedField:
     field: str
     question: str
+    options: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

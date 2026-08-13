@@ -7,6 +7,7 @@ import {
 } from "../schedule/timelineApi";
 import {
   createProposal,
+  answerClarification,
   loadProposals,
   resolveProposal,
   restoreProposal,
@@ -15,6 +16,7 @@ import {
 import type {
   AgentCommand,
   ChronosLogEntry,
+  PendingAgentOperation,
   NewTaskInput,
   TimelineTask,
   Reminder,
@@ -31,6 +33,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [logs, setLogs] = useState<ChronosLogEntry[]>([]);
   const [pendingOperationCount, setPendingOperationCount] = useState(0);
+  const [pendingOperations, setPendingOperations] = useState<PendingAgentOperation[]>([]);
   const [selection, setSelection] = useState<TimelineSelection | null>(null);
   const [focusTarget, setFocusTarget] = useState<number | null>(null);
   const [storageStatus, setStorageStatus] =
@@ -52,11 +55,11 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
           reportStorageError(taskResult.reason);
         }
         if (proposalResult.status === "fulfilled") {
-          const latestPending = proposalResult.value.find(
+          const pending = proposalResult.value.filter(
             (proposal) => proposal.status === "pending"
               || proposal.status === "needs_clarification",
           );
-          setCommands(latestPending ? [proposalToCommand(latestPending)] : []);
+          setCommands(pending.map(proposalToCommand));
         }
         if (reminderResult.status === "fulfilled") {
           setReminders(reminderResult.value);
@@ -64,6 +67,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
         if (logResult.status === "fulfilled") {
           setLogs(logResult.value.entries);
           setPendingOperationCount(logResult.value.pendingCount);
+          setPendingOperations(logResult.value.pendingOperations);
         }
         const optionalFailures = [proposalResult, reminderResult, logResult]
           .filter((result) => result.status === "rejected")
@@ -302,7 +306,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
       ) {
         const command = proposalToCommand(proposal);
         setCommands((current) => [
-          ...current.filter((item) => item.status !== "proposed"),
+          ...current.filter((item) => item.id !== proposal.id),
           command,
         ]);
         if (proposal.task) setFocusTarget(proposal.task.start);
@@ -347,6 +351,24 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
       );
       reportStorageError(error);
     }
+  }
+
+  async function answerOperation(
+    id: string,
+    answer: string,
+    answerSelection: TimelineSelection | null = selection,
+  ) {
+    const proposal = await answerClarification(id, answer, answerSelection);
+    setCommands((current) => [
+      ...current.filter((item) => item.id !== id),
+      ...(proposal.status === "pending" || proposal.status === "needs_clarification"
+        ? [proposalToCommand(proposal)]
+        : []),
+    ]);
+    if (proposal.task) setFocusTarget(proposal.task.start);
+    await refreshLog();
+    await onOperationsChanged?.();
+    confirmStorage();
   }
 
   async function restoreLog(id: string) {
@@ -415,6 +437,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
     const result = await loadChronosLog();
     setLogs(result.entries);
     setPendingOperationCount(result.pendingCount);
+    setPendingOperations(result.pendingOperations);
   }
 
   function reportStorageError(error: unknown) {
@@ -433,6 +456,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
     commands,
     logs,
     pendingOperationCount,
+    pendingOperations,
     selection,
     storageStatus,
     storageError,
@@ -447,6 +471,7 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
     clearSelection: () => setSelection(null),
     runAgent,
     resolveCommand,
+    answerOperation,
     restoreLog,
   };
 }

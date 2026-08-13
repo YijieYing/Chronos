@@ -57,7 +57,7 @@ export interface ProposalPayload {
   }>;
   parser_mode?: "semantic" | "deterministic" | "deterministic_fallback";
   parser_warnings?: string[];
-  clarifications?: Array<{ field: string; question: string }>;
+  clarifications?: Array<{ field: string; question: string; options?: string[] }>;
   assumptions?: string[];
   reminder_drafts?: Array<{
     reminder: {

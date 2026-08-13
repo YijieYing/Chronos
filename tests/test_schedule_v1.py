@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from zoneinfo import ZoneInfo
 
+from chronos.agent.compiler import LLMChronosCompiler
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.projection_service import ProjectionService
 from chronos.agent.service import OperationStore
@@ -23,6 +24,7 @@ from chronos.schedule.agent_interpretation import (
 )
 from chronos.schedule.models import Task, TaskStatus
 from chronos.schedule.proposals import ProposalService
+from chronos.schedule.semantic_parser import SemanticScheduleCommandParser
 from chronos.schedule.service import ScheduleService
 
 
@@ -239,6 +241,71 @@ class ScheduleV1Test(TestCase):
         accepted_task_id = str(accepted_proposal["changes"][0]["task_id"])
         self.assertTrue(
             any(task.task_id == accepted_task_id for task in self.schedule.list_tasks())
+        )
+
+    def test_clarification_answer_recompiles_same_operation_snapshot(self) -> None:
+        database = Path(self.temporary.name) / "chronos.sqlite3"
+        operation_store = OperationStore(SQLiteAgentOperationRepository(database))
+        chronos_log = ChronosLogService(SQLiteChronosLogRepository(database))
+        unresolved = """{
+          "intent":"create_schedule","tasks":[],"unresolved":[{
+            "field":"tasks[0].duration_minutes","question":"每次需要多久？",
+            "options":["15分钟","30分钟","一小时"]
+          }],"assumptions":[]
+        }"""
+        resolved = """{
+          "intent":"create_schedule","tasks":[{
+            "title":"日语","title_source":"日语","duration_minutes":30,
+            "duration_source":"30分钟","preferred_start":"2026-08-13T19:00:00+08:00",
+            "temporal_source":"晚上","task_type":"research","recurrence":null,
+            "recurrence_sources":{},"fixed":false
+          }],"unresolved":[],"assumptions":[]
+        }"""
+        provider = _SequenceProvider(unresolved, unresolved, resolved)
+        compiler = LLMChronosCompiler(
+            SemanticScheduleCommandParser(provider, fallback_on_error=False)
+        )
+        router = V1Router(
+            self.schedule,
+            self.proposals,
+            chronos_log=chronos_log,
+            operation_store=operation_store,
+            compiler=compiler,
+        )
+        context = {"current_time": 1_786_608_000_000, "selection": None}
+
+        _, created = router.dispatch(
+            "POST", "/api/v1/proposals",
+            {"text": "晚上安排日语", "interaction_context": context},
+        )
+        first = created["data"]
+        assert isinstance(first, dict)
+        operation_id = str(first["proposal_id"])
+        _, log_before = router.dispatch("GET", "/api/v1/chronos-log")
+        before_data = log_before["data"]
+        assert isinstance(before_data, dict)
+        self.assertEqual(before_data["pending_operations"][0]["id"], operation_id)
+        self.assertEqual(
+            before_data["pending_operations"][0]["questions"][0]["options"],
+            ["15分钟", "30分钟", "一小时"],
+        )
+
+        _, answered = router.dispatch(
+            "POST", f"/api/v1/operations/{operation_id}/clarify",
+            {"answer": "30分钟", "interaction_context": context},
+        )
+        proposal = answered["data"]
+        assert isinstance(proposal, dict)
+        refreshed = operation_store.get(operation_id)
+
+        self.assertEqual(proposal["proposal_id"], operation_id)
+        self.assertEqual(proposal["status"], "pending")
+        self.assertEqual(refreshed.version, 2)
+        self.assertEqual(refreshed.state.value, "proposed")
+        self.assertEqual(len(operation_store.active()), 1)
+        self.assertEqual(
+            [entry.event_type.value for entry in chronos_log.list()[:2]],
+            ["proposal_updated", "clarification_answered"],
         )
 
     def test_v1_router_creates_and_updates_an_independent_reminder(self) -> None:
@@ -632,3 +699,13 @@ class _InterpretationParser:
 
     def interpret(self, text, now, tasks):
         return self.interpretation
+
+
+class _SequenceProvider:
+    def __init__(self, *responses: str) -> None:
+        self.responses = list(responses)
+
+    def generate(self, _system: str, _prompt: str) -> str:
+        if not self.responses:
+            raise AssertionError("semantic provider received an unexpected call")
+        return self.responses.pop(0)

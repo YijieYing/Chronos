@@ -21,6 +21,8 @@ from chronos.agent.models import (
     InteractionContext,
     OperationScope,
     OperationState,
+    ProjectionKind,
+    ProjectionVisualState,
     ProposalSnapshot,
     RecurrenceSpec,
     ReminderSpec,
@@ -156,11 +158,15 @@ def _compile_interpretation(
     context: InteractionContext,
     tasks: list[Task],
 ) -> CompilerResult:
-    operation_id = str(uuid4())
+    operation_id = str(context.timeline_context.get("operation_id") or uuid4())
+    version = int(context.timeline_context.get("operation_version", 1))
+    created_at_value = context.timeline_context.get("operation_created_at")
     now = datetime.fromtimestamp(context.current_time / 1000, UTC)
+    created_at = created_at_value if isinstance(created_at_value, datetime) else now
     operations = _interpretation_operations(interpretation, tasks)
     questions = tuple(
-        ClarificationState(item.field, item.question) for item in interpretation.unresolved
+        ClarificationState(item.field, item.question, item.options)
+        for item in interpretation.unresolved
     )
     state = (
         OperationState.AWAITING_CLARIFICATION
@@ -182,7 +188,7 @@ def _compile_interpretation(
         else _interpretation_message(interpretation, operations)
     )
     proposal = (
-        ProposalSnapshot(operation_id, 1, operations, now, message)
+        ProposalSnapshot(operation_id, version, operations, now, message)
         if state == OperationState.PROPOSED and operations
         else None
     )
@@ -210,9 +216,9 @@ def _compile_interpretation(
         impact=min(1, len(operations) * 0.2),
         reversible=True,
         required_autonomy_level=0,
-        created_at=now,
+        created_at=created_at,
         updated_at=now,
-        version=1,
+        version=version,
         proposal=proposal,
     )
     common = {
@@ -338,8 +344,12 @@ def _interpretation_projections(
     *,
     incomplete: bool,
 ) -> tuple[TimelineProjection, ...]:
-    kind = "clarification" if incomplete else "proposal"
-    visual = "incomplete" if incomplete else "proposed"
+    kind = ProjectionKind.CLARIFICATION if incomplete else ProjectionKind.PROPOSAL
+    visual = (
+        ProjectionVisualState.INCOMPLETE
+        if incomplete
+        else ProjectionVisualState.PROPOSED
+    )
     projections: list[TimelineProjection] = []
     for index, item in enumerate(operations):
         if isinstance(item, (CreateTaskOperation, UpdateTaskOperation)):

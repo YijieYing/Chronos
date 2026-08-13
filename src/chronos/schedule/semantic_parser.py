@@ -330,8 +330,10 @@ phrase","duration_minutes":30,"duration_source":"exact source phrase","preferred
 One user request may produce multiple tasks. Morning and evening occurrences described as separate
 activities must be separate tasks. Never copy the entire request into a title. Never invent a time,
 duration, weekday, recurrence, or task name. If a required field is absent or ambiguous, use null
-and add {"field":"tasks[0].duration_minutes","question":"..."} to unresolved. Source strings must
-be verbatim substrings of the request; personal context can guide task_type but cannot supply a
+and add {"field":"tasks[0].duration_minutes","question":"..."} to unresolved. An unresolved item
+may include 2–4 concise "options" when there are genuinely useful common answers; never require the
+user to choose one of them. Source strings must be verbatim substrings of the request; personal
+context can guide task_type but cannot supply a
 missing explicit time or duration. Every *_source must be copied character-for-character as a
 contiguous substring of request, never paraphrased. Evidence fragments may be shared by multiple
 tasks. recurrence_sources is field-level: frequency evidence and until evidence are separate arrays
@@ -512,7 +514,13 @@ def _interpretation_from_response(
     if not isinstance(unresolved_payload, list):
         raise ValueError("unresolved must be a list")
     unresolved = [
-        UnresolvedField(str(item.get("field", "")), str(item.get("question", "")))
+        UnresolvedField(
+            str(item.get("field", "")),
+            str(item.get("question", "")),
+            tuple(str(option) for option in item.get("options", []) if str(option).strip())
+            if isinstance(item.get("options", []), list)
+            else (),
+        )
         for item in unresolved_payload
         if isinstance(item, dict) and item.get("field") and item.get("question")
     ]

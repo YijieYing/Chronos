@@ -213,6 +213,14 @@ Remove the clarification portal. Answers target an operation ID and cause a comp
 recompile. Multiple pending operations remain visible in Peek/Expanded Log and retain independent
 projections. Scope intersection marks impacted snapshots stale before they can execute.
 
+Phase 8 removes the blocking Timeline modal and exposes pending Operation summaries through the
+Chronos Log read model. Collapsed Log Peek can answer one clarification with free text, an optional
+Compiler-provided quick option, or the currently selected Timeline range; users can cycle between
+parallel clarifications, while Expanded Log lists every one independently. Answers target
+`POST /api/v1/operations/{id}/clarify` and cause the Compiler to replace the same Operation with a
+complete versioned snapshot. The answer and resulting clarification/proposal transition are both
+appended to Chronos Log. Proposal Apply/Reject presentation remains Phase 9.
+
 ### Phases 10–11 — Autonomy and Runtime
 
 Move validation, constraint checks, autonomy gating, execution, transaction capture, rollback, and
