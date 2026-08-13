@@ -9,7 +9,9 @@ from typing import Literal, Protocol
 from chronos.schedule.commands import ScheduleCommand
 from chronos.schedule.models import Task
 
-InterpretationIntent = Literal["create_schedule", "create_reminder", "single_command"]
+InterpretationIntent = Literal[
+    "create_schedule", "create_reminder", "replan_schedule", "single_command"
+]
 
 
 @dataclass(frozen=True, slots=True)

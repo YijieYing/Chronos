@@ -199,6 +199,14 @@ no repository, planner, Schedule, Reminder, or Runtime dependency. The API appli
 persistence and synchronizes current Accept/Reject lifecycle states. Moving semantic understanding
 and memory retrieval behind this port remains Phase 7.
 
+Phase 7 adds `LLMChronosCompiler`, which makes one semantic call with prompt, accepted memory,
+current tasks, timezone, and the active Timeline selection. It emits strict task/reminder/update IR
+without writing Schedule data. `ProposalService.create_from_compiler()` now consumes that IR and
+delegates spatial placement to the existing Schedule planner, so Proposal generation no longer asks
+the model to interpret the same input a second time. The deterministic parser continues through the
+Phase 6 compatibility path. Broad multi-task replanning is represented safely as an unresolved
+`replan_schedule` intent until the Phase 12 Replanner supplies executable primitives.
+
 ### Phases 8–9 — Clarification and proposal UX
 
 Remove the clarification portal. Answers target an operation ID and cause a complete versioned

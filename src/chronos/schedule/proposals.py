@@ -8,8 +8,25 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from chronos.agent.compiler import (
+    ClarificationCompilerResult,
+    CompilerResult,
+    InformationalCompilerResult,
+)
+from chronos.agent.models import (
+    CreateReminderOperation,
+    CreateTaskOperation,
+    DeleteTaskOperation,
+    UpdateTaskOperation,
+)
 from chronos.reminders.models import Reminder, ReminderStatus
 from chronos.reminders.service import ReminderService, reminder_dict
+from chronos.schedule.agent_interpretation import (
+    AgentInterpretation,
+    InterpretedReminder,
+    InterpretedTask,
+    UnresolvedField,
+)
 from chronos.schedule.command_batch import ScheduleCommandBatch, ScheduleCreateCommand
 from chronos.schedule.commands import (
     DeterministicScheduleCommandParser,
@@ -97,9 +114,120 @@ class ProposalService:
             text, command, zone, context_used, parser_mode, parser_warnings
         )
 
-    def _create_clarification(self, text, interpretation) -> dict[str, object]:
+    def create_from_compiler(
+        self, result: CompilerResult, now: datetime | None = None
+    ) -> dict[str, object]:
+        """Plan and persist an already-compiled operation without another model call."""
+        operation = result.operation
+        text = operation.intent.source_text or ""
+        context_used = tuple(dict(item) for item in result.context_used)
+        assumptions = tuple(
+            str(item) for item in operation.intent.attributes.get("assumptions", [])
+        )
+        parser_mode = str(operation.intent.attributes.get("parser_mode", "semantic"))
+        if isinstance(result, ClarificationCompilerResult):
+            interpretation = AgentInterpretation(
+                intent=_agent_intent(operation.intent.kind),
+                tasks=(),
+                unresolved=tuple(
+                    UnresolvedField(item.field, item.question)
+                    for item in operation.unresolved_questions
+                ),
+                assumptions=assumptions,
+                context_used=context_used,
+                mode=parser_mode,
+            )
+            return self._create_clarification(text, interpretation, operation.id)
+        if isinstance(result, InformationalCompilerResult):
+            query = operation.intent.attributes.get("query", {})
+            query = query if isinstance(query, dict) else {}
+            command = ScheduleCommand(
+                type="query_schedule",
+                task_id=str(query["task_id"]) if query.get("task_id") else None,
+                query_date=(
+                    date.fromisoformat(str(query["query_date"]))
+                    if query.get("query_date") else None
+                ),
+            )
+            return self._create_query(
+                text, command, list(context_used), parser_mode, list(result.warnings),
+                operation.id,
+            )
+        task_operations = [
+            item for item in operation.compiled_operations
+            if isinstance(item, CreateTaskOperation)
+        ]
+        reminder_operations = [
+            item for item in operation.compiled_operations
+            if isinstance(item, CreateReminderOperation)
+        ]
+        mutation_operations = [
+            item for item in operation.compiled_operations
+            if isinstance(item, (UpdateTaskOperation, DeleteTaskOperation))
+        ]
+        categories = sum(bool(items) for items in (
+            task_operations, reminder_operations, mutation_operations
+        ))
+        if categories != 1:
+            raise ValueError("planner requires one homogeneous operation category")
+        if task_operations:
+            interpretation = AgentInterpretation(
+                intent="create_schedule",
+                tasks=tuple(_interpreted_task(item) for item in task_operations),
+                assumptions=assumptions,
+                context_used=context_used,
+                mode=parser_mode,
+            )
+            local_now = (now or datetime.now(UTC)).astimezone(
+                ZoneInfo(self._schedule.settings()["timezone"])
+            )
+            return self._create_batch(
+                text,
+                interpretation,
+                local_now.date(),
+                operation.id,
+                [item.task_id for item in task_operations],
+            )
+        if reminder_operations:
+            interpretation = AgentInterpretation(
+                intent="create_reminder",
+                tasks=(),
+                reminders=tuple(_interpreted_reminder(item) for item in reminder_operations),
+                assumptions=assumptions,
+                context_used=context_used,
+                mode=parser_mode,
+            )
+            return self._create_reminder(
+                text,
+                interpretation,
+                operation.id,
+                [item.reminder_id for item in reminder_operations],
+            )
+        item = mutation_operations[0]
+        if isinstance(item, DeleteTaskOperation):
+            command = ScheduleCommand(type="delete_task", task_id=item.task_id)
+        else:
+            command = ScheduleCommand(
+                type="update_task",
+                task_id=item.task_id,
+                preferred_start=datetime.fromtimestamp(item.task.start / 1000, UTC),
+                estimated_minutes=item.task.duration_minutes,
+            )
+        return self._create_mutation(
+            text,
+            command,
+            ZoneInfo(self._schedule.settings()["timezone"]),
+            list(context_used),
+            parser_mode,
+            list(result.warnings),
+            operation.id,
+        )
+
+    def _create_clarification(
+        self, text, interpretation, proposal_id: str | None = None
+    ) -> dict[str, object]:
         proposal = {
-            "proposal_id": str(uuid4()),
+            "proposal_id": proposal_id or str(uuid4()),
             "status": "needs_clarification",
             "requires_confirmation": False,
             "request_text": text,
@@ -126,13 +254,23 @@ class ProposalService:
         }
         return self._repository.save(proposal)
 
-    def _create_reminder(self, text, interpretation) -> dict[str, object]:
+    def _create_reminder(
+        self,
+        text,
+        interpretation,
+        proposal_id: str | None = None,
+        reminder_ids: list[str] | None = None,
+    ) -> dict[str, object]:
         if self._reminders is None:
             raise RuntimeError("reminder service is not configured")
         drafts = []
-        for item in interpretation.reminders:
+        for index, item in enumerate(interpretation.reminders):
             reminder = Reminder(
-                reminder_id=str(uuid4()),
+                reminder_id=(
+                    reminder_ids[index]
+                    if reminder_ids is not None
+                    else str(uuid4())
+                ),
                 title=item.title,
                 trigger_type=item.trigger_type,
                 trigger_at=item.trigger_at,
@@ -155,7 +293,7 @@ class ProposalService:
                 }
             )
         proposal = {
-            "proposal_id": str(uuid4()),
+            "proposal_id": proposal_id or str(uuid4()),
             "status": "pending",
             "requires_confirmation": True,
             "request_text": text,
@@ -191,15 +329,20 @@ class ProposalService:
         return self._repository.save(proposal)
 
     def _create_batch(
-        self, text, interpretation, start_date: date
+        self,
+        text,
+        interpretation,
+        start_date: date,
+        proposal_id: str | None = None,
+        task_ids: list[str] | None = None,
     ) -> dict[str, object]:
         typed_commands: list[ScheduleCreateCommand] = []
-        for item in interpretation.tasks:
+        for index, item in enumerate(interpretation.tasks):
             if item.duration_minutes is None or item.preferred_start is None:
                 raise ValueError("resolved interpretation still contains missing fields")
             intensity, spectrum = _task_characteristics(item.task_type)
             task = Task(
-                task_id=str(uuid4()),
+                task_id=task_ids[index] if task_ids is not None else str(uuid4()),
                 title=item.title,
                 estimated_minutes=item.duration_minutes,
                 priority=3,
@@ -246,7 +389,7 @@ class ProposalService:
             if item.task_id in {task.task_id for task in proposed}
         ]
         proposal = {
-            "proposal_id": str(uuid4()),
+            "proposal_id": proposal_id or str(uuid4()),
             "status": "pending",
             "requires_confirmation": True,
             "request_text": text,
@@ -289,6 +432,7 @@ class ProposalService:
         context_used: list[dict[str, object]],
         parser_mode: str,
         parser_warnings: list[str],
+        proposal_id: str | None = None,
     ) -> dict[str, object]:
         zone = ZoneInfo(self._schedule.settings()["timezone"])
         timeline = self._schedule.timeline()["tasks"]
@@ -312,7 +456,7 @@ class ProposalService:
         else:
             explanation = ["没有找到符合条件的安排。"]
         proposal = {
-            "proposal_id": str(uuid4()),
+            "proposal_id": proposal_id or str(uuid4()),
             "status": "informational",
             "requires_confirmation": False,
             "request_text": text,
@@ -339,6 +483,7 @@ class ProposalService:
         context_used: list[dict[str, object]],
         parser_mode: str,
         parser_warnings: list[str],
+        proposal_id: str | None = None,
     ) -> dict[str, object]:
         before: Task | None = None
         if command.type == "create_task":
@@ -402,7 +547,7 @@ class ProposalService:
             for target in relevant_dates
         }
         proposal = {
-            "proposal_id": str(uuid4()),
+            "proposal_id": proposal_id or str(uuid4()),
             "status": "pending",
             "requires_confirmation": True,
             "request_text": text,
@@ -598,6 +743,65 @@ def _reminder_from_dict(item: dict[str, object]) -> dict[str, object]:
         "source": str(item["source"]),
         "created_at": datetime.fromisoformat(str(item["created_at"])),
     }
+
+
+def _agent_intent(kind: str) -> str:
+    if kind == "create_reminder":
+        return "create_reminder"
+    if kind == "create_schedule":
+        return "create_schedule"
+    return "single_command"
+
+
+def _interpreted_task(operation: CreateTaskOperation) -> InterpretedTask:
+    task = operation.task
+    recurrence = None
+    recurrence_sources: dict[str, tuple[str, ...]] = {}
+    if task.recurrence is not None:
+        recurrence = {
+            "frequency": task.recurrence.frequency,
+            "weekdays": list(task.recurrence.weekdays),
+            "until": task.recurrence.until,
+        }
+        recurrence_sources["frequency"] = (task.recurrence.frequency,)
+        if task.recurrence.until:
+            recurrence_sources["until"] = (task.recurrence.until,)
+    return InterpretedTask(
+        title=task.title,
+        title_source=task.title,
+        duration_minutes=task.duration_minutes,
+        duration_source=str(task.duration_minutes),
+        preferred_start=datetime.fromtimestamp(task.start / 1000, UTC),
+        temporal_source="compiler_ir",
+        task_type=task.task_type,
+        recurrence=recurrence,
+        recurrence_sources=recurrence_sources,
+        fixed=task.fixed,
+    )
+
+
+def _interpreted_reminder(operation: CreateReminderOperation) -> InterpretedReminder:
+    reminder = operation.reminder
+    return InterpretedReminder(
+        title=reminder.title,
+        title_source=reminder.title,
+        trigger_type=reminder.trigger_type,  # type: ignore[arg-type]
+        trigger_at=(
+            datetime.fromtimestamp(reminder.at / 1000, UTC)
+            if reminder.at is not None else None
+        ),
+        window_start=(
+            datetime.fromtimestamp(reminder.window.start / 1000, UTC)
+            if reminder.window else None
+        ),
+        window_end=(
+            datetime.fromtimestamp(reminder.window.end / 1000, UTC)
+            if reminder.window else None
+        ),
+        temporal_sources=(),
+        delivery=reminder.delivery,  # type: ignore[arg-type]
+        priority=reminder.priority,
+    )
 
 
 def _command_dict(command: ScheduleCommand) -> dict[str, object]:

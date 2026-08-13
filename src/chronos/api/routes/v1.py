@@ -4,7 +4,11 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 
-from chronos.agent.compiler import ChronosCompiler, LegacyProposalCompiler
+from chronos.agent.compiler import (
+    ChronosCompiler,
+    CompilerResult,
+    LegacyProposalCompiler,
+)
 from chronos.agent.legacy_log import proposal_references
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.models import (
@@ -46,7 +50,8 @@ class V1Router:
         self._chronos_log = chronos_log
         self._operation_store = operation_store
         self._projections = projections
-        self._compiler = compiler or LegacyProposalCompiler()
+        self._semantic_compiler = compiler
+        self._compiler = LegacyProposalCompiler()
 
     def dispatch(
         self,
@@ -200,11 +205,27 @@ class V1Router:
         if method == "POST" and path == "/api/v1/proposals":
             text = str(payload.get("text", ""))
             context = _interaction_context(payload.get("interaction_context"))
-            proposal = self._proposals.create(text)
+            compiled: CompilerResult | None = None
+            if self._semantic_compiler is not None:
+                compile_context = replace(
+                    context,
+                    user_input=text,
+                    timeline_context={
+                        "tasks": tuple(self._schedule.list_tasks()),
+                        "timezone": self._schedule.settings()["timezone"],
+                    },
+                )
+                compiled = self._semantic_compiler.compile(compile_context)
+                proposal = self._proposals.create_from_compiler(
+                    compiled,
+                    datetime.fromtimestamp(context.current_time / 1000, UTC),
+                )
+            else:
+                proposal = self._proposals.create(text)
             proposal = self._proposals.attach_interaction_context(
                 str(proposal["proposal_id"]), _interaction_context_dict(context)
             )
-            self._compile_proposal(proposal, text, context)
+            self._compile_proposal(proposal, text, context, compiled)
             self._log_proposal_created(proposal, text)
             return HTTPStatus.CREATED, success(proposal)
         proposal_prefix = "/api/v1/proposals/"
@@ -278,6 +299,7 @@ class V1Router:
         proposal: dict[str, object],
         text: str,
         context: InteractionContext,
+        compiled: CompilerResult | None = None,
     ) -> None:
         if self._operation_store is None:
             return
@@ -287,7 +309,15 @@ class V1Router:
             timeline_context={"legacy_proposal": proposal},
         )
         result = self._compiler.compile(compile_context)
-        self._operation_store.create_snapshot(result.operation)
+        operation = result.operation
+        if compiled is not None:
+            operation = replace(
+                operation,
+                intent=compiled.operation.intent,
+                unresolved_questions=compiled.operation.unresolved_questions,
+                ambiguity=compiled.operation.ambiguity,
+            )
+        self._operation_store.create_snapshot(operation)
 
     def _complete_operation(self, operation_id: str) -> None:
         if self._operation_store is None:

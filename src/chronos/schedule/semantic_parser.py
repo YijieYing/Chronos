@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from chronos.agent.models import TimelineReference
 from chronos.schedule.agent_config import AgentConfig, ProviderConfig
 from chronos.schedule.agent_interpretation import (
     AgentInterpretation,
@@ -100,18 +101,30 @@ class SemanticScheduleCommandParser:
             )
 
     def interpret(self, text: str, now: datetime, tasks: list[Task]) -> AgentInterpretation:
+        return self.interpret_context(text, now, tasks, None)
+
+    def interpret_context(
+        self,
+        text: str,
+        now: datetime,
+        tasks: list[Task],
+        selection: TimelineReference | None,
+    ) -> AgentInterpretation:
         profile = self._profile_cache.get().content
         context_used = tuple(self._memory_retriever(text))
         memory = "\n".join(f"- [{item['category']}] {item['content']}" for item in context_used)
         system = _interpretation_system_prompt(profile, memory)
-        response = self._provider.generate(system, _prompt(text, now, tasks))
-        first = _interpretation_from_response(response, now, tasks, text, context_used)
+        response = self._provider.generate(system, _prompt(text, now, tasks, selection))
+        first = _interpretation_from_response(
+            response, now, tasks, text, context_used, selection
+        )
         if not first.unresolved:
             return first
         repair_prompt = json.dumps(
             {
                 "now": now.isoformat(),
                 "request": text,
+                "selection": _selection_context(selection),
                 "tasks": _task_context(tasks),
                 "validation_errors": [
                     {"field": item.field, "error": item.question} for item in first.unresolved
@@ -124,7 +137,9 @@ class SemanticScheduleCommandParser:
             ensure_ascii=False,
         )
         repaired = self._provider.generate(system, repair_prompt)
-        return _interpretation_from_response(repaired, now, tasks, text, context_used)
+        return _interpretation_from_response(
+            repaired, now, tasks, text, context_used, selection
+        )
 
 
 def build_command_parser(
@@ -300,8 +315,10 @@ title."""
 
 _INTERPRETATION_PROMPT = """You are the interpretation layer for Chronos Schedule.
 Return only one JSON object. Do not schedule or optimize anything. Extract user intent and preserve
-field provenance. Valid intents are create_schedule, create_reminder, update_task, delete_task,
-query_schedule. Reminder intent is for “don't forget / remind me” events that do not reserve time.
+field provenance. Valid intents are create_schedule, create_reminder, replan_schedule, update_task,
+delete_task, query_schedule. Reminder intent is for “don't forget / remind me” events that do not
+reserve time. For replan_schedule, do not invent task edits: return tasks:[] plus an unresolved
+question about the adjustment scope until the Replanner integration is available.
 
 For create_schedule return:
 {"intent":"create_schedule","tasks":[{"title":"concise name","title_source":"exact source
@@ -320,8 +337,10 @@ contiguous substring of request, never paraphrased. Evidence fragments may be sh
 tasks. recurrence_sources is field-level: frequency evidence and until evidence are separate arrays
 of exact request substrings. A phrase such as “每天” may ground every task it grammatically governs.
 If the request states an end date, recurrence.until is required and the date is inclusive. Exact
-clock times are fixed. Broad windows such as morning are not exact times and must be unresolved
-unless the user supplied a clock time.
+clock times are fixed. Broad windows such as morning/afternoon/evening are valid flexible timing:
+choose a representative start inside that window (09:00/14:00/19:00), set fixed=false, and keep
+the exact broad-window phrase as temporal_source. Do not ask for a clock time when the user says
+the time does not need to be fixed.
 
 For create_reminder return:
 {"intent":"create_reminder","tasks":[],"reminders":[{"title":"concise reminder",
@@ -335,7 +354,12 @@ Reminder titles describe what must not be forgotten, never include “提醒我/
 exact request substring. Do not give reminders duration and do not turn them into tasks.
 
 For update_task, delete_task, or query_schedule, return intent plus a single legacy_command object
-using the existing command schema and an empty tasks array. Never invent task ids."""
+using the existing command schema and an empty tasks array. Never invent task ids.
+
+The prompt may include selection. Selection is authoritative interaction context, not user prose.
+For a selected task/reminder, resolve words such as “this/it/这个” to that object id. For a selected
+time_range, phrases such as “这里” refer to that range; place work inside it when duration fits.
+Do not ask which object or range the user means when selection already answers that question."""
 
 
 def _system_prompt(profile: str, memory: str = "") -> str:
@@ -371,11 +395,29 @@ def _interpretation_system_prompt(profile: str, memory: str = "") -> str:
     )
 
 
-def _prompt(text: str, now: datetime, tasks: list[Task]) -> str:
+def _prompt(
+    text: str,
+    now: datetime,
+    tasks: list[Task],
+    selection: TimelineReference | None = None,
+) -> str:
     return json.dumps(
-        {"now": now.isoformat(), "request": text, "tasks": _task_context(tasks)},
+        {
+            "now": now.isoformat(),
+            "request": text,
+            "selection": _selection_context(selection),
+            "tasks": _task_context(tasks),
+        },
         ensure_ascii=False,
     )
+
+
+def _selection_context(selection: TimelineReference | None) -> dict[str, object] | None:
+    if selection is None:
+        return None
+    if selection.type == "time_range":
+        return {"type": selection.type, "start": selection.start, "end": selection.end}
+    return {"type": selection.type, "id": selection.id}
 
 
 def _task_context(tasks: list[Task]) -> list[dict[str, object]]:
@@ -462,6 +504,7 @@ def _interpretation_from_response(
     tasks: list[Task],
     request_text: str,
     context_used: tuple[dict[str, object], ...],
+    selection: TimelineReference | None = None,
 ) -> AgentInterpretation:
     payload = _json_object(response)
     intent = str(payload.get("intent", ""))
@@ -484,9 +527,28 @@ def _interpretation_from_response(
             return _reminder_interpretation(
                 payload, now, request_text, context_used, unresolved, assumptions
             )
+        if intent == "replan_schedule":
+            if not unresolved:
+                unresolved.append(UnresolvedField(
+                    "replan.scope", "你希望 Chronos 调整今天哪些可变任务？"
+                ))
+            return AgentInterpretation(
+                intent="replan_schedule",
+                tasks=(),
+                unresolved=tuple(unresolved),
+                assumptions=assumptions,
+                context_used=context_used,
+            )
         legacy = payload.get("legacy_command")
         if not isinstance(legacy, dict):
             raise ValueError("non-create interpretation requires legacy_command")
+        legacy = dict(legacy)
+        if (
+            selection is not None
+            and selection.type == "task"
+            and intent in {"update_task", "delete_task", "query_schedule"}
+        ):
+            legacy.setdefault("task_id", selection.id)
         command = _command_from_response(
             json.dumps(legacy, ensure_ascii=False), now, tasks, request_text
         )

@@ -13,16 +13,17 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-from chronos.agent.log_service import ChronosLogService
+from chronos.agent.compiler import LLMChronosCompiler
 from chronos.agent.legacy_log import migrate_proposal_history
+from chronos.agent.log_service import ChronosLogService
 from chronos.agent.projection_service import ProjectionService
 from chronos.agent.service import OperationStore
 from chronos.api.contracts.common import failure, success
 from chronos.api.contracts.schedule import scheduled_task_values
 from chronos.api.routes.v1 import V1Router
 from chronos.infrastructure.sqlite_agent_memory import SQLiteAgentMemoryRepository
-from chronos.infrastructure.sqlite_cognitive_state import SQLiteCognitiveStateRepository
 from chronos.infrastructure.sqlite_chronos_log import SQLiteChronosLogRepository
+from chronos.infrastructure.sqlite_cognitive_state import SQLiteCognitiveStateRepository
 from chronos.infrastructure.sqlite_operations import SQLiteAgentOperationRepository
 from chronos.infrastructure.sqlite_proposals import SQLiteProposalRepository
 from chronos.infrastructure.sqlite_reminders import SQLiteReminderRepository
@@ -36,7 +37,7 @@ from chronos.schedule.agent_config import load_agent_config
 from chronos.schedule.agent_memory import MAX_ARCHIVE_BYTES, AgentMemoryService
 from chronos.schedule.models import TaskStatus
 from chronos.schedule.proposals import ProposalService
-from chronos.schedule.semantic_parser import build_command_parser
+from chronos.schedule.semantic_parser import SemanticScheduleCommandParser, build_command_parser
 from chronos.schedule.service import ScheduleService
 
 SERVICE_CAPABILITIES = [
@@ -391,6 +392,9 @@ def main() -> int:
         chronos_log_service,
         operation_store,
         projection_service,
+        LLMChronosCompiler(command_parser)
+        if isinstance(command_parser, SemanticScheduleCommandParser)
+        else None,
     )
     root = Path(__file__).resolve().parents[3] / "web" / "dist"
     if not root.is_dir():
