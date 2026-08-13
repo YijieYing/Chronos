@@ -23,6 +23,7 @@ from chronos.agent.models import (
     TimeRange,
 )
 from chronos.agent.projection_service import ProjectionService
+from chronos.agent.runtime import ChronosRuntime
 from chronos.agent.serialization import log_entry_to_dict, projection_to_dict
 from chronos.agent.service import OperationStore
 from chronos.api.contracts.common import success
@@ -48,6 +49,7 @@ class V1Router:
         operation_store: OperationStore | None = None,
         projections: ProjectionService | None = None,
         compiler: ChronosCompiler | None = None,
+        runtime: ChronosRuntime | None = None,
     ) -> None:
         self._schedule = schedule
         self._proposals = proposals
@@ -58,6 +60,7 @@ class V1Router:
         self._projections = projections
         self._semantic_compiler = compiler
         self._compiler = LegacyProposalCompiler()
+        self._runtime = runtime
 
     def dispatch(
         self,
@@ -291,14 +294,21 @@ class V1Router:
                     if self._operation_store is not None
                     else None
                 )
-                proposal = self._proposals.accept(proposal_id)
-                self._complete_operation(proposal_id)
+                if self._runtime is not None:
+                    proposal, transaction = self._runtime.execute(proposal_id)
+                else:
+                    proposal = self._proposals.accept(proposal_id)
+                    transaction = None
+                    self._complete_operation(proposal_id)
                 if changed_scope is not None:
                     self._timeline_changed(
                         changed_scope, exclude_operation_id=proposal_id
                     )
                 self._log_proposal_event(
-                    proposal, LogEventType.OPERATION_COMPLETED, "已应用时间轴调整。"
+                    proposal,
+                    LogEventType.OPERATION_COMPLETED,
+                    "已应用时间轴调整。",
+                    {"transaction_id": transaction.id} if transaction else None,
                 )
                 return HTTPStatus.OK, success(proposal)
             if method == "POST" and suffix.endswith("/reject"):
@@ -316,7 +326,11 @@ class V1Router:
                     if self._operation_store is not None
                     else None
                 )
-                proposal = self._proposals.restore(proposal_id)
+                proposal = (
+                    self._runtime.revert(proposal_id)
+                    if self._runtime is not None
+                    else self._proposals.restore(proposal_id)
+                )
                 if changed_scope is not None:
                     self._timeline_changed(
                         changed_scope, exclude_operation_id=proposal_id
@@ -507,12 +521,17 @@ class V1Router:
         decision = evaluate_autonomy(operation, policy)
         if not decision.execute:
             return proposal
-        applied = self._proposals.accept(operation.id)
-        self._complete_operation(operation.id)
+        if self._runtime is not None:
+            applied, transaction = self._runtime.execute(operation.id)
+        else:
+            applied = self._proposals.accept(operation.id)
+            transaction = None
+            self._complete_operation(operation.id)
         self._log_proposal_event(
             applied,
             LogEventType.OPERATION_COMPLETED,
             f"已按 Autonomy Level {policy.level} 直接执行；可撤销。",
+            {"transaction_id": transaction.id} if transaction else None,
         )
         self._timeline_changed(operation.scope, exclude_operation_id=operation.id)
         return applied
@@ -569,6 +588,7 @@ class V1Router:
         proposal: dict[str, object],
         event_type: LogEventType,
         message: str,
+        metadata: dict[str, object] | None = None,
     ) -> None:
         if self._chronos_log is None:
             return
@@ -577,7 +597,7 @@ class V1Router:
             message,
             operation_id=str(proposal["proposal_id"]),
             references=proposal_references(proposal),
-            metadata={"proposal_status": str(proposal["status"])},
+            metadata={"proposal_status": str(proposal["status"]), **(metadata or {})},
         )
 
 

@@ -606,6 +606,17 @@ class ProposalService:
             {**proposal, "status": "stale", "requires_confirmation": False}
         )
 
+    def mark_runtime_rolled_back(self, proposal_id: str) -> dict[str, object]:
+        proposal = self.get(proposal_id)
+        return self._repository.save(
+            {
+                **proposal,
+                "status": "failed",
+                "requires_confirmation": False,
+                "runtime_rolled_back": True,
+            }
+        )
+
     def accept(self, proposal_id: str) -> dict[str, object]:
         proposal = self.get(proposal_id)
         if proposal["status"] != "pending":

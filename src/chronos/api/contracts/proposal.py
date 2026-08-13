@@ -6,4 +6,5 @@ PROPOSAL_STATUSES = {
     "informational",
     "needs_clarification",
     "stale",
+    "failed",
 }

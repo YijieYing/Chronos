@@ -17,6 +17,7 @@ from chronos.agent.compiler import LLMChronosCompiler
 from chronos.agent.legacy_log import migrate_proposal_history
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.projection_service import ProjectionService
+from chronos.agent.runtime import ChronosRuntime
 from chronos.agent.service import OperationStore
 from chronos.api.contracts.common import failure, success
 from chronos.api.contracts.schedule import scheduled_task_values
@@ -29,6 +30,7 @@ from chronos.infrastructure.sqlite_proposals import SQLiteProposalRepository
 from chronos.infrastructure.sqlite_reminders import SQLiteReminderRepository
 from chronos.infrastructure.sqlite_schedule import SQLiteScheduleRepository
 from chronos.infrastructure.sqlite_timeline import SQLiteTimelineRepository
+from chronos.infrastructure.sqlite_transactions import SQLiteAdjustmentTransactionRepository
 from chronos.monitor.cognitive import cognitive_point_dict
 from chronos.monitor.serialization import observation_from_json
 from chronos.monitor.service import MonitorService
@@ -383,6 +385,14 @@ def main() -> int:
     proposal_service = ProposalService(
         service, proposal_repository, command_parser, reminder_service
     )
+    runtime = ChronosRuntime(
+        operation_store,
+        proposal_service,
+        service,
+        reminder_service,
+        SQLiteAdjustmentTransactionRepository(args.database),
+        chronos_log_service,
+    )
     migrate_proposal_history(proposal_service.list(), chronos_log_service)
     v1_router = V1Router(
         service,
@@ -395,6 +405,7 @@ def main() -> int:
         LLMChronosCompiler(command_parser)
         if isinstance(command_parser, SemanticScheduleCommandParser)
         else None,
+        runtime,
     )
     root = Path(__file__).resolve().parents[3] / "web" / "dist"
     if not root.is_dir():

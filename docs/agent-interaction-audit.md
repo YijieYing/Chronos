@@ -244,6 +244,16 @@ same Proposal/Operation lifecycle, writes Chronos Log, and remains restorable; i
 Timeline directly from the LLM. The current policy is switchable from the header or
 `/api/v1/agent/autonomy`. Transaction capture and generalized Runtime rollback remain Phase 11.
 
+Phase 11 introduces `ChronosRuntime` as the only production execution boundary for confirmed and
+autonomous Agent Operations. Runtime validates the typed Operation and pending Proposal, advances
+approved/executing/completed states, captures persisted before/after Schedule snapshots, and writes
+an `AdjustmentTransaction`. Failures trigger scope rollback before the Operation becomes failed and
+are recorded in Chronos Log. Runtime Restore reuses the stable inverse Proposal operations and marks
+the persisted transaction reverted. The existing Schedule batch repository remains the atomic
+primitive for multi-day task plans; Runtime adds cross-domain compensation for Reminder batches and
+durable audit/restore state. Manual user edits remain direct Timeline commands and are not Agent
+transactions.
+
 ### Phase 12 — Adjustment integration
 
 Define signals in Phase 1 but keep production emission disabled. Later, Adaptation creates Operations
