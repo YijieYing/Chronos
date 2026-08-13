@@ -113,3 +113,19 @@ directly from Codex, ChatGPT, Claude, Octopus, or other live sources.
   import is a refresh workflow rather than continuous OAuth polling.
 - Store a source cursor/hash and show only additions, changes, contradictions, and possible removals
   since the last accepted import. Never turn an imported chat directly into durable memory.
+
+## Backend Forecast and observed-task identity
+
+Phase 12 routes reliable Schedule and Monitor evidence into passive Agent Operations, but the
+current Forecast remains a frontend visualization calculation. Before enabling `task_overrun`,
+`schedule_drift`, or automatic replanning:
+
+1. Persist Monitor's observed/current task identity with confidence instead of retaining only a
+   broad activity type in CognitiveState.
+2. Move predicted task end and overrun confidence behind a versioned backend Forecast contract.
+3. Compare committed Schedule blocks with observed task intervals to emit evidence-backed drift and
+   overrun signals.
+4. Replace the passive replan compiler with a replanning compiler that produces strict IR and sends
+   it through Autonomy Gate, Proposal/Projection, Runtime, and Undo.
+5. Keep proactive Log/UI presentation separately opt-in; signal capture must continue when the Log
+   is folded or the UI is not running.

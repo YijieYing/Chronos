@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from threading import Lock
 
@@ -16,13 +17,18 @@ from chronos.monitor.models import Observation
 
 
 class MonitorService:
-    def __init__(self, repository: SQLiteCognitiveStateRepository) -> None:
+    def __init__(
+        self,
+        repository: SQLiteCognitiveStateRepository,
+        on_state: Callable[[datetime], object] | None = None,
+    ) -> None:
         self._repository = repository
         previous = repository.latest()
         self._estimator = CognitiveStateEstimator(previous)
         self._recognizer = LiveRecognizer()
         self._lock = Lock()
         self._last_ingested_at: datetime | None = None
+        self._on_state = on_state
 
     def ingest(self, observation: Observation) -> CognitiveStatePoint | None:
         with self._lock:
@@ -35,6 +41,8 @@ class MonitorService:
             self._repository.upsert(point)
             self._repository.prune(datetime.now(UTC))
             self._last_ingested_at = datetime.now(UTC)
+            if self._on_state is not None:
+                self._on_state(point.time)
             return point
 
     def current(self, now: datetime | None = None) -> dict[str, object]:

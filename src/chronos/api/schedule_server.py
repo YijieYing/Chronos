@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
+from chronos.agent.adjustment import AdjustmentCoordinator, AdjustmentEngine
 from chronos.agent.compiler import LLMChronosCompiler
 from chronos.agent.legacy_log import migrate_proposal_history
 from chronos.agent.log_service import ChronosLogService
@@ -53,6 +54,7 @@ SERVICE_CAPABILITIES = [
     "chronos-log-v1",
     "timeline-projections-v1",
     "chronos-compiler-v1",
+    "adjustment-signals-v1",
 ]
 
 
@@ -363,13 +365,18 @@ def main() -> int:
     repository = SQLiteScheduleRepository(args.database)
     service = ScheduleService(repository)
     cognitive_repository = SQLiteCognitiveStateRepository(args.database)
-    monitor_service = MonitorService(cognitive_repository)
     timeline_repository = SQLiteTimelineRepository(args.database)
     service.import_legacy_timeline_tasks(timeline_repository.list_tasks())
     proposal_repository = SQLiteProposalRepository(args.database)
     reminder_service = ReminderService(SQLiteReminderRepository(args.database))
     chronos_log_service = ChronosLogService(SQLiteChronosLogRepository(args.database))
     operation_store = OperationStore(SQLiteAgentOperationRepository(args.database))
+    adjustment_coordinator = AdjustmentCoordinator(
+        AdjustmentEngine(service, cognitive_repository), operation_store
+    )
+    monitor_service = MonitorService(
+        cognitive_repository, on_state=adjustment_coordinator.scan_safely
+    )
     projection_service = ProjectionService(operation_store)
     memory_repository = SQLiteAgentMemoryRepository(args.database)
     memory_service = AgentMemoryService(memory_repository, args.agent_import_dir)
@@ -406,7 +413,9 @@ def main() -> int:
         if isinstance(command_parser, SemanticScheduleCommandParser)
         else None,
         runtime,
+        adjustment_coordinator,
     )
+    adjustment_coordinator.scan_safely()
     root = Path(__file__).resolve().parents[3] / "web" / "dist"
     if not root.is_dir():
         raise SystemExit("Frontend build not found. Run: npm --prefix web run build")

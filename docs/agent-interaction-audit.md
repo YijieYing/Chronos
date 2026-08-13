@@ -345,3 +345,46 @@ context remains `agent`; it must not become a generic shared folder.
   tested in a later phase.
 - ReplanSignal and task adjustment policy are contracts only; Phase 1 must not activate proactive UI
   or change planner behavior.
+
+## Phase 12 — Adjustment Engine integration
+
+Phase 12 now has a backend-owned passive signal path:
+
+```text
+Schedule / CognitiveState evidence
+        ↓
+AdjustmentEngine
+        ↓
+DetectedReplanSignal (stable deduplication key)
+        ↓
+AgentOperation
+        ↓
+PassiveReplanCompiler
+        ↓
+completed Operation, no Timeline mutation
+```
+
+The coordinator runs once at server startup, after Timeline mutations through the v1 router, and
+after Monitor produces a cognitive-state point. Signals are persisted in the existing versioned
+Operation Store, so no second adjustment-history store or direct Schedule write path was added.
+`GET /api/v1/replan-signals` exposes the captured internal state for diagnostics.
+
+The first reliable detectors are:
+
+- `missed_task`: a scheduled occurrence is at least 15 minutes beyond its planned end and has not
+  been completed or cancelled;
+- `fixed_conflict`: two fixed Schedule occurrences overlap;
+- `cognitive_overload`: a backend CognitiveState point is recent, sufficiently confident, and its
+  cognitive load crossed the configured threshold.
+
+Proactive behavior remains explicitly disabled. A detected signal compiles to a terminal,
+non-pending Operation with `execution = captured_without_timeline_change`; it creates neither a
+Proposal nor a Timeline Projection and never reaches Runtime. This preserves the required protocol
+boundary now while leaving proposal generation as a compiler replacement rather than a detector
+rewrite.
+
+`schedule_drift` and `task_overrun` remain inactive. The current backend does not persist an
+observed current task or an authoritative predicted end. The visible Forecast is calculated in the
+frontend Monitor adapter, so treating it as backend evidence would manufacture confidence and
+reintroduce two sources of truth. Those signals should be enabled only after observed task identity
+and Forecast output become backend contracts.

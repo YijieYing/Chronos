@@ -108,6 +108,9 @@ class OperationStore:
             tuple(state for state in OperationState if state not in TERMINAL_STATES)
         )
 
+    def list(self) -> list[AgentOperation]:
+        return self._repository.list()
+
     def mark_conflicting_stale(
         self,
         changed_scope: OperationScope,

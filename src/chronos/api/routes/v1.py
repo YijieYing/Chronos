@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 
 from chronos.agent.autonomy import evaluate_autonomy, policy_for_level
+from chronos.agent.adjustment import AdjustmentCoordinator
 from chronos.agent.compiler import (
     ChronosCompiler,
     ClarificationCompilerResult,
@@ -50,6 +51,7 @@ class V1Router:
         projections: ProjectionService | None = None,
         compiler: ChronosCompiler | None = None,
         runtime: ChronosRuntime | None = None,
+        adjustments: AdjustmentCoordinator | None = None,
     ) -> None:
         self._schedule = schedule
         self._proposals = proposals
@@ -61,6 +63,7 @@ class V1Router:
         self._semantic_compiler = compiler
         self._compiler = LegacyProposalCompiler()
         self._runtime = runtime
+        self._adjustments = adjustments
 
     def dispatch(
         self,
@@ -71,6 +74,32 @@ class V1Router:
         if not path.startswith("/api/v1/"):
             return None
         payload = payload or {}
+        if method == "GET" and path == "/api/v1/replan-signals":
+            operations = self._adjustments.list_captured() if self._adjustments else ()
+            return HTTPStatus.OK, success(
+                {
+                    "proactive_enabled": False,
+                    "signals": [
+                        {
+                            "operation_id": operation.id,
+                            "state": operation.state.value,
+                            "summary": operation.intent.summary,
+                            **dict(operation.intent.attributes),
+                            "references": [
+                                {
+                                    "type": reference.type,
+                                    "id": reference.id,
+                                    "start": reference.start,
+                                    "end": reference.end,
+                                }
+                                for reference in operation.references
+                            ],
+                            "detected_at": operation.updated_at.isoformat(),
+                        }
+                        for operation in operations
+                    ],
+                }
+            )
         if method == "GET" and path == "/api/v1/timeline-projections":
             if self._projections is None:
                 return HTTPStatus.OK, success({"projections": []})
@@ -405,6 +434,8 @@ class V1Router:
     def _timeline_changed(
         self, scope: OperationScope, *, exclude_operation_id: str | None = None
     ) -> None:
+        if self._adjustments is not None:
+            self._adjustments.scan_safely()
         if self._operation_store is None:
             return
         stale = self._operation_store.mark_conflicting_stale(
