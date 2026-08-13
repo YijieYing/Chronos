@@ -3,6 +3,13 @@
 Status: completed audit, 2026-08-13. This document describes the repository before the Operation
 foundation is introduced. It is a migration contract, not a claim that later phases already exist.
 
+Implementation progress:
+
+- Phase 1 completed: immutable Agent/IR contracts and versioned strict serialization.
+- Phase 2 completed: lifecycle validation, optimistic versioning, SQLite Operation persistence,
+  parallel pending queries, and scope-based stale marking.
+- These foundations are not wired into the proposal API or UI yet; that begins in later phases.
+
 ## Current architecture
 
 ### End-to-end request path

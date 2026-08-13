@@ -428,10 +428,21 @@ class AgentOperation:
             raise ValueError("awaiting clarification requires unresolved questions")
         if self.state == OperationState.PROPOSED and self.proposal is None:
             raise ValueError("proposed operation requires proposal snapshot")
-        if self.proposal and (
-            self.proposal.operation_id != self.id or self.proposal.version != self.version
+        if self.proposal and self.proposal.operation_id != self.id:
+            raise ValueError("proposal must belong to its operation")
+        if self.proposal and self.proposal.version > self.version:
+            raise ValueError("proposal version cannot exceed operation version")
+        if (
+            self.state == OperationState.PROPOSED
+            and self.proposal
+            and self.proposal.version != self.version
         ):
-            raise ValueError("proposal must match operation id and version")
+            raise ValueError("proposed snapshot must match operation version")
+        if self.state == OperationState.PROPOSED and self.proposal:
+            if self.proposal.operations != self.compiled_operations:
+                raise ValueError("proposal operations must match compiled operations")
+        if self.state == OperationState.FAILED and not self.failure_reason:
+            raise ValueError("failed Operation requires a reason")
         if any(item.operation_id != self.id for item in self.projections):
             raise ValueError("projection must belong to its operation")
 
