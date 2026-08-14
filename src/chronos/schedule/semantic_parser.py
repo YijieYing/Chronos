@@ -8,7 +8,7 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Protocol
+from typing import Protocol, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -38,6 +38,11 @@ TASK_TYPES = {
     "meeting",
     "recovery",
 }
+T = TypeVar("T")
+
+
+class ProviderOutputTruncatedError(RuntimeError):
+    """The provider stopped because its output budget was exhausted."""
 
 
 class TextGenerationProvider(Protocol):
@@ -79,12 +84,15 @@ class SemanticScheduleCommandParser:
             profile = self._profile_cache.get().content
             context_used = tuple(self._memory_retriever(text))
             memory = "\n".join(f"- [{item['category']}] {item['content']}" for item in context_used)
-            response = self._provider.generate(
-                _system_prompt(profile, memory), _prompt(text, now, tasks)
+            system = _system_prompt(profile, memory)
+            command = _generate_with_json_repair(
+                self._provider,
+                system,
+                _prompt(text, now, tasks),
+                _json_repair_context(text, now, tasks, None),
+                lambda response: _command_from_response(response, now, tasks, text),
             )
-            return SemanticParseResult(
-                _command_from_response(response, now, tasks, text), context_used
-            )
+            return SemanticParseResult(command, context_used)
         except Exception as error:
             if not self._fallback_on_error:
                 raise
@@ -110,36 +118,66 @@ class SemanticScheduleCommandParser:
         tasks: list[Task],
         selection: TimelineReference | None,
     ) -> AgentInterpretation:
-        profile = self._profile_cache.get().content
-        context_used = tuple(self._memory_retriever(text))
-        memory = "\n".join(f"- [{item['category']}] {item['content']}" for item in context_used)
-        system = _interpretation_system_prompt(profile, memory)
-        response = self._provider.generate(system, _prompt(text, now, tasks, selection))
-        first = _interpretation_from_response(
-            response, now, tasks, text, context_used, selection
-        )
-        if not first.unresolved:
-            return first
-        repair_prompt = json.dumps(
-            {
-                "now": now.isoformat(),
-                "request": text,
-                "selection": _selection_context(selection),
-                "tasks": _task_context(tasks),
-                "validation_errors": [
-                    {"field": item.field, "error": item.question} for item in first.unresolved
-                ],
-                "instruction": (
-                    "Regenerate the complete interpretation JSON. Fix validation errors by "
-                    "copying every *_source character-for-character from request. Do not invent."
+        context_used: tuple[dict[str, object], ...] = ()
+        try:
+            profile = self._profile_cache.get().content
+            context_used = tuple(self._memory_retriever(text))
+            memory = "\n".join(
+                f"- [{item['category']}] {item['content']}" for item in context_used
+            )
+            system = _interpretation_system_prompt(profile, memory)
+            decoder = lambda response: _interpretation_from_response(
+                response, now, tasks, text, context_used, selection
+            )
+            first = _generate_with_json_repair(
+                self._provider,
+                system,
+                _prompt(text, now, tasks, selection),
+                _json_repair_context(text, now, tasks, selection),
+                decoder,
+            )
+            if not first.unresolved:
+                return first
+            repair_prompt = json.dumps(
+                {
+                    "now": now.isoformat(),
+                    "request": text,
+                    "selection": _selection_context(selection),
+                    "tasks": _task_context(tasks),
+                    "validation_errors": [
+                        {"field": item.field, "error": item.question}
+                        for item in first.unresolved
+                    ],
+                    "instruction": (
+                        "Regenerate the complete interpretation JSON. Fix validation errors by "
+                        "copying every *_source character-for-character from request. Do not "
+                        "invent. Return compact JSON only."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+            repaired = self._provider.generate(system, repair_prompt)
+            return decoder(repaired)
+        except Exception as error:
+            if not self._fallback_on_error:
+                raise
+            warnings.warn(
+                f"Agent interpretation failed; returning safe clarification: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return AgentInterpretation(
+                intent="create_schedule",
+                tasks=(),
+                unresolved=(
+                    UnresolvedField(
+                        "agent.response",
+                        "Agent 返回的结构化结果不完整，请重试这条指令。",
+                    ),
                 ),
-            },
-            ensure_ascii=False,
-        )
-        repaired = self._provider.generate(system, repair_prompt)
-        return _interpretation_from_response(
-            repaired, now, tasks, text, context_used, selection
-        )
+                context_used=context_used,
+                mode="safe_fallback",
+            )
 
 
 def build_command_parser(
@@ -199,9 +237,13 @@ class _OpenAICompatibleProvider:
             self._timeout,
         )
         choice = response["choices"][0]
+        reason = str(choice.get("finish_reason") or "")
+        if reason in {"length", "max_tokens", "max_output_tokens"}:
+            raise ProviderOutputTruncatedError(
+                f"provider output was truncated (finish_reason={reason})"
+            )
         content = str(choice["message"].get("content") or "")
         if not content.strip():
-            reason = choice.get("finish_reason")
             raise RuntimeError(f"provider returned empty content (finish_reason={reason})")
         return content
 
@@ -227,6 +269,10 @@ class _AnthropicProvider:
             },
             self._timeout,
         )
+        if str(response.get("stop_reason") or "") == "max_tokens":
+            raise ProviderOutputTruncatedError(
+                "provider output was truncated (stop_reason=max_tokens)"
+            )
         blocks = response.get("content", [])
         return "".join(
             str(block.get("text", ""))
@@ -256,7 +302,12 @@ class _GeminiProvider:
             {"x-goog-api-key": self._config.api_key},
             self._timeout,
         )
-        parts = response["candidates"][0]["content"]["parts"]
+        candidate = response["candidates"][0]
+        if str(candidate.get("finishReason") or "").upper() == "MAX_TOKENS":
+            raise ProviderOutputTruncatedError(
+                "provider output was truncated (finishReason=MAX_TOKENS)"
+            )
+        parts = candidate["content"]["parts"]
         return "".join(str(part.get("text", "")) for part in parts)
 
 
@@ -294,6 +345,45 @@ def _post_json(
 
 def _join_url(base_url: str, endpoint: str) -> str:
     return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+
+
+def _generate_with_json_repair(
+    provider: TextGenerationProvider,
+    system: str,
+    prompt: str,
+    repair_context: dict[str, object],
+    decoder: Callable[[str], T],
+) -> T:
+    try:
+        return decoder(provider.generate(system, prompt))
+    except (json.JSONDecodeError, ProviderOutputTruncatedError) as error:
+        repair_prompt = json.dumps(
+            {
+                **repair_context,
+                "parse_error": f"{type(error).__name__}: {error}",
+                "instruction": (
+                    "The previous response was invalid or truncated. Regenerate the complete "
+                    "result from the supplied request and context. Return one compact valid JSON "
+                    "object only, with no markdown, commentary, or omitted closing tokens."
+                ),
+            },
+            ensure_ascii=False,
+        )
+        return decoder(provider.generate(system, repair_prompt))
+
+
+def _json_repair_context(
+    text: str,
+    now: datetime,
+    tasks: list[Task],
+    selection: TimelineReference | None,
+) -> dict[str, object]:
+    return {
+        "now": now.isoformat(),
+        "request": text,
+        "selection": _selection_context(selection),
+        "tasks": _task_context(tasks),
+    }
 
 
 _SYSTEM_PROMPT = """You convert natural-language requests into exactly one Chronos Schedule command.

@@ -15,7 +15,7 @@ base_url = "https://api.deepseek.com"
 endpoint = "/chat/completions"
 api_key = ""
 model = "deepseek-v4-flash"
-max_tokens = 800
+max_tokens = 2000
 temperature = 0.0
 json_mode = true
 
@@ -25,7 +25,7 @@ base_url = "https://api.openai.com/v1"
 endpoint = "/chat/completions"
 api_key = ""
 model = ""
-max_tokens = 800
+max_tokens = 2000
 temperature = 0.0
 json_mode = true
 
@@ -36,7 +36,7 @@ base_url = ""
 endpoint = "/chat/completions"
 api_key = ""
 model = ""
-max_tokens = 800
+max_tokens = 2000
 temperature = 0.0
 json_mode = true
 
@@ -47,7 +47,7 @@ endpoint = "/v1/messages"
 api_key = ""
 model = ""
 api_version = "2023-06-01"
-max_tokens = 800
+max_tokens = 2000
 temperature = 0.0
 
 [providers.gemini]
@@ -55,5 +55,5 @@ adapter = "gemini"
 base_url = "https://generativelanguage.googleapis.com"
 api_key = ""
 model = ""
-max_tokens = 800
+max_tokens = 2000
 temperature = 0.0

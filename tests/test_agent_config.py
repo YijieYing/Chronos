@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,7 +10,9 @@ from chronos.schedule.agent_config import AgentConfig, ProviderConfig, load_agen
 from chronos.schedule.agent_profile import AgentProfileCache
 from chronos.schedule.commands import DeterministicScheduleCommandParser
 from chronos.schedule.semantic_parser import (
+    ProviderOutputTruncatedError,
     SemanticScheduleCommandParser,
+    _OpenAICompatibleProvider,
     build_command_parser,
 )
 
@@ -62,6 +65,7 @@ model = "deepseek-v4-flash"
         self.assertEqual(config.selected_provider().model, "deepseek-v4-flash")
         self.assertEqual(config.profile_path, Path("config/agent.local.md"))
         self.assertEqual(config.profile_max_chars, 9000)
+        self.assertEqual(config.selected_provider().max_tokens, 2000)
 
     def test_blank_key_uses_deterministic_fallback(self) -> None:
         config = AgentConfig(
@@ -171,6 +175,80 @@ model = "deepseek-v4-flash"
         self.assertFalse(result.unresolved)
         self.assertEqual(len(provider.prompts), 2)
         self.assertIn("validation_errors", provider.prompts[1])
+
+    def test_interpretation_retries_one_malformed_json_response(self) -> None:
+        valid = (
+            '{"intent":"create_schedule","tasks":[{"title":"写方案",'
+            '"title_source":"写方案","duration_minutes":30,'
+            '"duration_source":"30分钟","preferred_start":"2026-08-12T14:00:00+08:00",'
+            '"temporal_source":"下午两点","task_type":"creative",'
+            '"recurrence":null,"fixed":true}],"unresolved":[],"assumptions":[]}'
+        )
+        provider = _SequenceProvider(['{"intent":"create_schedule",', valid])
+        parser = SemanticScheduleCommandParser(provider)
+
+        result = parser.interpret(
+            "下午两点写方案30分钟",
+            datetime(2026, 8, 12, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            [],
+        )
+
+        self.assertEqual(result.tasks[0].title, "写方案")
+        self.assertEqual(len(provider.prompts), 2)
+        self.assertIn("previous response was invalid or truncated", provider.prompts[1])
+
+    def test_interpretation_uses_safe_fallback_after_failed_json_retry(self) -> None:
+        provider = _SequenceProvider(['{"intent":', '{"intent":'])
+        parser = SemanticScheduleCommandParser(provider)
+
+        with self.assertWarns(RuntimeWarning):
+            result = parser.interpret(
+                "下午提醒我交材料",
+                datetime(2026, 8, 12, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+                [],
+            )
+
+        self.assertEqual(result.mode, "safe_fallback")
+        self.assertEqual(result.unresolved[0].field, "agent.response")
+        self.assertFalse(result.tasks)
+        self.assertEqual(len(provider.prompts), 2)
+
+    def test_interpretation_can_disable_safe_fallback(self) -> None:
+        provider = _SequenceProvider(['{"intent":', '{"intent":'])
+        parser = SemanticScheduleCommandParser(provider, fallback_on_error=False)
+
+        with self.assertRaises(json.JSONDecodeError):
+            parser.interpret(
+                "下午提醒我交材料",
+                datetime(2026, 8, 12, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+                [],
+            )
+
+    def test_openai_compatible_provider_reports_length_finish_reason(self) -> None:
+        provider = _OpenAICompatibleProvider(
+            ProviderConfig(
+                name="deepseek",
+                adapter="openai_compatible",
+                base_url="https://api.deepseek.com",
+                endpoint="/chat/completions",
+                api_key="test-key",
+                model="deepseek-v4-flash",
+            ),
+            1,
+        )
+        response = {
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": '{"intent":"create_schedule"'},
+                }
+            ]
+        }
+
+        with patch(
+            "chronos.schedule.semantic_parser._post_json", return_value=response
+        ), self.assertRaisesRegex(ProviderOutputTruncatedError, "finish_reason=length"):
+            provider.generate("system", "prompt")
 
     def test_interpretation_cannot_drop_an_explicit_recurrence(self) -> None:
         response = (

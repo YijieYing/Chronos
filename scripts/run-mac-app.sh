@@ -40,7 +40,7 @@ PORT=8765
 service_is_current() {
   curl --noproxy '*' --silent --fail --max-time 1 \
     "http://127.0.0.1:$1/api/health" \
-    | grep -q 'reminders-v1'
+    | grep -q 'adjustment-signals-v1'
 }
 
 if curl --noproxy '*' --silent --fail --max-time 1 \

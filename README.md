@@ -154,8 +154,11 @@ Run it:
 This single command starts the local Schedule service when needed, opens and activates the macOS
 window, and starts the native macOS Monitor when no live collector is already connected. It stops
 the service and collector processes it started when the app exits. If a Schedule service or Monitor
-is already running, the shell reuses it. Set `CHRONOS_WEB_URL` to another localhost URL, such as
-Vite on port 5173, for development.
+is already running, the shell reuses it only when the health response advertises the current
+`adjustment-signals-v1` capability; an incompatible service is isolated on another port. Always use
+this script for a normal launch rather than running the Swift executable directly, because the
+executable does not own or upgrade the Python service. Set `CHRONOS_WEB_URL` to another localhost
+URL, such as Vite on port 5173, for development.
 
 The local service accepts normalized Observation objects at
 `POST /api/monitor/observations`. It exposes interpreted state—not raw keyboard or window events—at:

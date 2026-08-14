@@ -19,7 +19,7 @@ class ProviderConfig:
     endpoint: str
     api_key: str
     model: str
-    max_tokens: int = 800
+    max_tokens: int = 2000
     temperature: float = 0.0
     json_mode: bool = True
     api_version: str = "2023-06-01"
@@ -88,7 +88,7 @@ def _provider_config(name: str, values: dict[str, object]) -> ProviderConfig:
         endpoint=str(values.get("endpoint", default_endpoint)),
         api_key=str(values.get("api_key", "")).strip(),
         model=str(values.get("model", "")).strip(),
-        max_tokens=int(values.get("max_tokens", 800)),
+        max_tokens=int(values.get("max_tokens", 2000)),
         temperature=float(values.get("temperature", 0)),
         json_mode=bool(values.get("json_mode", True)),
         api_version=str(values.get("api_version", "2023-06-01")),
