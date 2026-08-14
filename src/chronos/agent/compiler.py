@@ -140,7 +140,7 @@ class LLMChronosCompiler:
         self._interpreter = interpreter
 
     def compile(self, context: InteractionContext) -> CompilerResult:
-        text = (context.user_input or "").strip()
+        text = _semantic_input(context)
         if not text:
             raise ValueError("Compiler requires user_input")
         timezone = str(context.timeline_context.get("timezone", "UTC"))
@@ -150,6 +150,20 @@ class LLMChronosCompiler:
             text, now, tasks, context.selection
         )
         return _compile_interpretation(interpretation, text, context, tasks)
+
+
+def _semantic_input(context: InteractionContext) -> str:
+    text = (context.user_input or "").strip()
+    clarification = context.clarification_answer
+    if clarification is None:
+        return text
+    return (
+        f"{text}\n\n"
+        "用户回答 clarification：\n"
+        f"field: {clarification.field}\n"
+        f"question: {clarification.question}\n"
+        f"answer: {clarification.answer}"
+    )
 
 
 def _compile_interpretation(

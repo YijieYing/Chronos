@@ -60,6 +60,8 @@ export async function resolveProposal(
 
 export async function answerClarification(
   id: string,
+  field: string,
+  question: string,
   answer: string,
   selection: TimelineSelection | null,
 ): Promise<ScheduleProposal> {
@@ -69,6 +71,8 @@ export async function answerClarification(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        field,
+        question,
         answer,
         interaction_context: { current_time: Date.now(), selection },
       }),

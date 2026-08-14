@@ -292,7 +292,12 @@ class ScheduleV1Test(TestCase):
 
         _, answered = router.dispatch(
             "POST", f"/api/v1/operations/{operation_id}/clarify",
-            {"answer": "30分钟", "interaction_context": context},
+            {
+                "field": "tasks[0].duration_minutes",
+                "question": "每次需要多久？",
+                "answer": "30分钟",
+                "interaction_context": context,
+            },
         )
         proposal = answered["data"]
         assert isinstance(proposal, dict)
@@ -307,6 +312,121 @@ class ScheduleV1Test(TestCase):
             [entry.event_type.value for entry in chronos_log.list()[:2]],
             ["proposal_updated", "clarification_answered"],
         )
+        self.assertIn("field: tasks[0].duration_minutes", provider.prompts[2])
+        self.assertIn("question: 每次需要多久？", provider.prompts[2])
+        self.assertIn("answer: 30分钟", provider.prompts[2])
+
+    def test_clarification_answers_advance_one_field_at_a_time(self) -> None:
+        database = Path(self.temporary.name) / "chronos.sqlite3"
+        operation_store = OperationStore(SQLiteAgentOperationRepository(database))
+        chronos_log = ChronosLogService(SQLiteChronosLogRepository(database))
+        both_unresolved = """{
+          "intent":"create_schedule","tasks":[],"unresolved":[
+            {"field":"tasks[0].duration_minutes","question":"修自行车需要多久？"},
+            {"field":"tasks[1].duration_minutes","question":"买咖啡需要多久？"}
+          ],"assumptions":[]
+        }"""
+        second_unresolved = """{
+          "intent":"create_schedule","tasks":[{
+            "title":"修自行车","title_source":"修自行车","duration_minutes":60,
+            "duration_source":"一小时","preferred_start":"2026-08-13T14:00:00+08:00",
+            "temporal_source":"下午","task_type":"execution","recurrence":null,
+            "recurrence_sources":{},"fixed":false
+          }],"unresolved":[{
+            "field":"tasks[1].duration_minutes","question":"买咖啡需要多久？"
+          }],"assumptions":[]
+        }"""
+        resolved = """{
+          "intent":"create_schedule","tasks":[{
+            "title":"修自行车","title_source":"修自行车","duration_minutes":60,
+            "duration_source":"一小时","preferred_start":"2026-08-13T14:00:00+08:00",
+            "temporal_source":"下午","task_type":"execution","recurrence":null,
+            "recurrence_sources":{},"fixed":false
+          },{
+            "title":"买咖啡","title_source":"买咖啡","duration_minutes":30,
+            "duration_source":"30分钟","preferred_start":"2026-08-13T14:00:00+08:00",
+            "temporal_source":"下午","task_type":"execution","recurrence":null,
+            "recurrence_sources":{},"fixed":false
+          }],"unresolved":[],"assumptions":[]
+        }"""
+        provider = _SequenceProvider(
+            both_unresolved,
+            both_unresolved,
+            second_unresolved,
+            second_unresolved,
+            resolved,
+        )
+        compiler = LLMChronosCompiler(
+            SemanticScheduleCommandParser(provider, fallback_on_error=False)
+        )
+        router = V1Router(
+            self.schedule,
+            self.proposals,
+            chronos_log=chronos_log,
+            operation_store=operation_store,
+            compiler=compiler,
+        )
+        context = {"current_time": 1_786_608_000_000, "selection": None}
+
+        _, created = router.dispatch(
+            "POST", "/api/v1/proposals",
+            {"text": "今天下午修自行车并买咖啡", "interaction_context": context},
+        )
+        operation_id = str(created["data"]["proposal_id"])
+        _, first_answer = router.dispatch(
+            "POST", f"/api/v1/operations/{operation_id}/clarify",
+            {
+                "field": "tasks[0].duration_minutes",
+                "question": "修自行车需要多久？",
+                "answer": "一小时",
+                "interaction_context": context,
+            },
+        )
+
+        first_proposal = first_answer["data"]
+        assert isinstance(first_proposal, dict)
+        after_first = operation_store.get(operation_id)
+        self.assertEqual(first_proposal["status"], "needs_clarification")
+        self.assertEqual(after_first.version, 2)
+        self.assertEqual(
+            [question.field for question in after_first.unresolved_questions],
+            ["tasks[1].duration_minutes"],
+        )
+        _, pending = router.dispatch("GET", "/api/v1/chronos-log")
+        pending_data = pending["data"]
+        assert isinstance(pending_data, dict)
+        self.assertEqual(
+            pending_data["pending_operations"][0]["questions"][0]["field"],
+            "tasks[1].duration_minutes",
+        )
+
+        with self.assertRaisesRegex(ValueError, "stale or already resolved"):
+            router.dispatch(
+                "POST", f"/api/v1/operations/{operation_id}/clarify",
+                {
+                    "field": "tasks[0].duration_minutes",
+                    "question": "修自行车需要多久？",
+                    "answer": "一小时",
+                    "interaction_context": context,
+                },
+            )
+
+        _, second_answer = router.dispatch(
+            "POST", f"/api/v1/operations/{operation_id}/clarify",
+            {
+                "field": "tasks[1].duration_minutes",
+                "question": "买咖啡需要多久？",
+                "answer": "30分钟",
+                "interaction_context": context,
+            },
+        )
+        second_proposal = second_answer["data"]
+        assert isinstance(second_proposal, dict)
+        after_second = operation_store.get(operation_id)
+        self.assertEqual(second_proposal["status"], "pending")
+        self.assertEqual(after_second.version, 3)
+        self.assertEqual(after_second.state.value, "proposed")
+        self.assertEqual(after_second.unresolved_questions, ())
 
     def test_manual_overlapping_change_recompiles_proposal_in_place(self) -> None:
         database = Path(self.temporary.name) / "chronos.sqlite3"
@@ -808,8 +928,10 @@ class _InterpretationParser:
 class _SequenceProvider:
     def __init__(self, *responses: str) -> None:
         self.responses = list(responses)
+        self.prompts: list[str] = []
 
-    def generate(self, _system: str, _prompt: str) -> str:
+    def generate(self, _system: str, prompt: str) -> str:
+        self.prompts.append(prompt)
         if not self.responses:
             raise AssertionError("semantic provider received an unexpected call")
         return self.responses.pop(0)

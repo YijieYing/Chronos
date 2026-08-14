@@ -409,6 +409,9 @@ field provenance. Valid intents are create_schedule, create_reminder, replan_sch
 delete_task, query_schedule. Reminder intent is for “don't forget / remind me” events that do not
 reserve time. For replan_schedule, do not invent task edits: return tasks:[] plus an unresolved
 question about the adjustment scope until the Replanner integration is available.
+When the request contains a "用户回答 clarification" section, apply its answer only to the named
+field and question. Regenerate the complete latest interpretation, preserve every other unresolved
+field, and remove the answered field only after its value is represented in the output.
 
 For create_schedule return:
 {"intent":"create_schedule","tasks":[{"title":"concise name","title_source":"exact source

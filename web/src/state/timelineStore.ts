@@ -361,10 +361,18 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
 
   async function answerOperation(
     id: string,
+    field: string,
+    question: string,
     answer: string,
     answerSelection: TimelineSelection | null = selection,
   ) {
-    const proposal = await answerClarification(id, answer, answerSelection);
+    const proposal = await answerClarification(
+      id,
+      field,
+      question,
+      answer,
+      answerSelection,
+    );
     setCommands((current) => [
       ...current.filter((item) => item.id !== id),
       ...(proposal.status === "pending" || proposal.status === "needs_clarification"

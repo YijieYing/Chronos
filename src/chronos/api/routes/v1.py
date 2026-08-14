@@ -16,6 +16,7 @@ from chronos.agent.legacy_log import proposal_references
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.models import (
     AutonomyPolicy,
+    ClarificationAnswer,
     InteractionContext,
     LogEventType,
     OperationScope,
@@ -385,14 +386,31 @@ class V1Router:
         if current.state != OperationState.AWAITING_CLARIFICATION:
             raise ValueError("operation is not awaiting clarification")
         answer = str(payload.get("answer", "")).strip()
+        field = str(payload.get("field", "")).strip()
+        question = str(payload.get("question", "")).strip()
         context = _interaction_context(payload.get("interaction_context"))
         if not answer and context.selection is None:
             raise ValueError("clarification answer or Timeline selection is required")
+        if not field or not question:
+            raise ValueError("clarification field and question are required")
+        unresolved = next(
+            (item for item in current.unresolved_questions if item.field == field),
+            None,
+        )
+        if unresolved is None:
+            raise ValueError("clarification field is stale or already resolved")
+        if unresolved.question != question:
+            raise ValueError("clarification question is stale")
+        answer_text = answer or "使用当前选择的时间范围"
         source = current.intent.source_text or ""
-        combined = f"{source}\n\n用户补充：{answer or '使用当前选择的时间范围'}"
         compile_context = replace(
             context,
-            user_input=combined,
+            user_input=source,
+            clarification_answer=ClarificationAnswer(
+                field=field,
+                question=question,
+                answer=answer_text,
+            ),
             timeline_context={
                 "tasks": tuple(self._schedule.list_tasks()),
                 "timezone": self._schedule.settings()["timezone"],
@@ -413,9 +431,10 @@ class V1Router:
         if self._chronos_log is not None:
             self._chronos_log.append(
                 LogEventType.CLARIFICATION_ANSWERED,
-                answer or "使用了选中的时间范围。",
+                answer_text,
                 operation_id=operation_id,
                 references=(context.selection,) if context.selection else (),
+                metadata={"field": field, "question": question},
             )
             event_type = (
                 LogEventType.CLARIFICATION_REQUESTED

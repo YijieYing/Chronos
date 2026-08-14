@@ -516,9 +516,21 @@ class AutonomyPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class ClarificationAnswer:
+    field: str
+    question: str
+    answer: str
+
+    def __post_init__(self) -> None:
+        if not self.field.strip() or not self.question.strip() or not self.answer.strip():
+            raise ValueError("clarification field, question, and answer are required")
+
+
+@dataclass(frozen=True, slots=True)
 class InteractionContext:
     current_time: int
     user_input: str | None = None
+    clarification_answer: ClarificationAnswer | None = None
     selection: TimelineReference | None = None
     current_state: dict[str, object] | None = None
     timeline_context: dict[str, object] = field(default_factory=dict)

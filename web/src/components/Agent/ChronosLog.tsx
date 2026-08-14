@@ -22,6 +22,8 @@ interface ChronosLogProps {
   onReference: (reference: TimelineReference) => void;
   onAnswer: (
     operationId: string,
+    field: string,
+    question: string,
     answer: string,
     selection: TimelineSelection | null,
   ) => Promise<void>;
@@ -82,13 +84,13 @@ export function ChronosLog({
           {!!active.questions[0]?.options.length && (
             <div className={styles.quickAnswers}>
               {active.questions[0].options.map((option) => (
-                <button key={option} onClick={() => submit(active.id, option)}>{option}</button>
+                <button key={option} onClick={() => submit(active, option)}>{option}</button>
               ))}
             </div>
           )}
           <form onSubmit={(event) => {
             event.preventDefault();
-            void submit(active.id, answer);
+            void submit(active, answer);
           }}>
             <input
               aria-label="回答 Chronos 澄清问题"
@@ -204,12 +206,20 @@ export function ChronosLog({
     </AnimatePresence>
   );
 
-  async function submit(operationId: string, value: string) {
+  async function submit(operation: PendingAgentOperation, value: string) {
     if (submitting || (!value.trim() && !selection)) return;
+    const currentQuestion = operation.questions[0];
+    if (!currentQuestion) return;
     setSubmitting(true);
     setError(null);
     try {
-      await onAnswer(operationId, value.trim(), selection);
+      await onAnswer(
+        operation.id,
+        currentQuestion.field,
+        currentQuestion.question,
+        value.trim(),
+        selection,
+      );
       setAnswer("");
       setActiveOperationId(null);
     } catch (failure) {
