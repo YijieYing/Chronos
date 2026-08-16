@@ -15,7 +15,7 @@ from chronos.agent.meaning import (
     Snapshot,
     TimeKind,
 )
-from chronos.agent.plan import Change, Horizon, Plan, TaskDraft, Window
+from chronos.agent.plan import Change, Horizon, Plan, ReminderDraft, TaskDraft, Window
 from chronos.agent.state import State
 
 
@@ -35,7 +35,11 @@ class Planner:
         for event in snapshot.events:
             if event.gaps or event.residue:
                 raise PlanningError(f"Event {event.id} has unresolved meaning")
-            change, horizon = _task(event, state, occupied)
+            change, horizon = (
+                _task(event, state, occupied)
+                if event.kind == Kind.TASK
+                else _reminder(event, state)
+            )
             changes.append(change)
             horizons.append(horizon)
         if snapshot.directives:
@@ -83,6 +87,39 @@ def _task(
         window=window,
     )
     return Change(event.id, RequestKind.ADD, task=task), window
+
+
+def _reminder(event: Event, state: State) -> tuple[Change, Window]:
+    if event.kind != Kind.REMINDER or event.request.type != RequestKind.ADD:
+        raise PlanningError("Planner supports add Task or Reminder Events")
+    title = " · ".join(item.text.strip() for item in event.content if item.text.strip())
+    if not title:
+        raise PlanningError("Event has no displayable source content")
+    reminder_id = str(uuid5(NAMESPACE_URL, f"{event.id}:reminder"))
+    if event.time.type == TimeKind.POINT and event.time.start is not None:
+        if event.time.start < state.now:
+            raise PlanningError("prospective reminder cannot be placed in the past")
+        horizon = Window(event.time.start, event.time.start + 1)
+        draft = ReminderDraft(reminder_id, title, "time", at=event.time.start)
+    elif event.time.type == TimeKind.RANGE:
+        assert event.time.start is not None and event.time.end is not None
+        if event.time.end <= state.now:
+            raise PlanningError("prospective reminder window has already ended")
+        horizon = Window(max(event.time.start, state.now), event.time.end)
+        draft = ReminderDraft(reminder_id, title, "window", window=horizon)
+    elif event.time.type in {TimeKind.PERIOD, TimeKind.FLEXIBLE} and event.time.period is not None:
+        period = _period(event.time.period, state)
+        horizon = Window(max(period.start, state.now), period.end)
+        draft = ReminderDraft(
+            reminder_id,
+            title,
+            "window",
+            window=horizon,
+            delivery="context-aware" if event.time.type == TimeKind.FLEXIBLE else "exact",
+        )
+    else:
+        raise PlanningError("Reminder requires point, range, or symbolic period time")
+    return Change(event.id, RequestKind.ADD, reminder=draft), horizon
 
 
 def _period(period: Period, state: State) -> Window:

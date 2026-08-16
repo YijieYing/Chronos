@@ -7,11 +7,13 @@ from chronos.agent.compiler import LLMChronosCompiler
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.models import (
     AgentOperation,
+    CreateReminderOperation,
     CreateTaskOperation,
     IntentSnapshot,
     OperationScope,
     OperationState,
     ProposalSnapshot,
+    ReminderSpec,
     TaskSpec,
     TimeRange,
 )
@@ -198,14 +200,46 @@ class ChronosRuntimeTest(TestCase):
         with self.assertRaises(KeyError):
             self.schedule.get_task("task-past")
 
+    def test_canonical_runtime_creates_window_reminder(self) -> None:
+        start = int(datetime(2026, 8, 17, 18, 0, tzinfo=UTC).timestamp() * 1000)
+        end = int(datetime(2026, 8, 17, 23, 0, tzinfo=UTC).timestamp() * 1000)
+        executable = CreateReminderOperation(
+            "reminder-canonical",
+            ReminderSpec(
+                "交材料",
+                "window",
+                window=TimeRange(start, end),
+                delivery="context-aware",
+            ),
+        )
+        operation = self._canonical_operation(executable, horizon=start)
+        self.operations.create_snapshot(operation)
+
+        self.runtime.execute(operation, (executable,))
+
+        reminder = self.reminders.get("reminder-canonical")
+        self.assertEqual(reminder["title"], "交材料")
+        self.assertEqual(reminder["delivery"], "context-aware")
+        self.assertEqual(reminder["trigger"], {"type": "window", "start": start, "end": end})
+
     def _canonical_operation(
         self,
-        executable: CreateTaskOperation,
+        executable: CreateTaskOperation | CreateReminderOperation,
         *,
         horizon: int,
     ) -> AgentOperation:
         now = datetime.now(UTC)
-        operation_id = f"operation-{executable.task_id}"
+        object_id = (
+            executable.task_id
+            if isinstance(executable, CreateTaskOperation)
+            else executable.reminder_id
+        )
+        title = (
+            executable.task.title
+            if isinstance(executable, CreateTaskOperation)
+            else executable.reminder.title
+        )
+        operation_id = f"operation-{object_id}"
         proposal = ProposalSnapshot(
             operation_id,
             1,
@@ -218,7 +252,7 @@ class ChronosRuntimeTest(TestCase):
             state=OperationState.PROPOSED,
             intent=IntentSnapshot(
                 "add",
-                executable.task.title,
+                title,
                 attributes={
                     "planning_mode": "prospective",
                     "planning_horizon_start": horizon,
@@ -228,15 +262,20 @@ class ChronosRuntimeTest(TestCase):
             compiled_operations=(executable,),
             projections=(),
             references=(),
-            scope=OperationScope(
-                task_ids=(executable.task_id,),
-                time_ranges=(
-                    TimeRange(
+            scope=(
+                OperationScope(
+                    task_ids=(executable.task_id,),
+                    time_ranges=(TimeRange(
                         executable.task.start,
                         executable.task.start
                         + executable.task.duration_minutes * 60_000,
-                    ),
-                ),
+                    ),),
+                )
+                if isinstance(executable, CreateTaskOperation)
+                else OperationScope(
+                    reminder_ids=(executable.reminder_id,),
+                    time_ranges=(executable.reminder.window,) if executable.reminder.window else (),
+                )
             ),
             ambiguity=0,
             risk=0,

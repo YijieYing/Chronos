@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from chronos.agent.interpreter import Interpreter
 from chronos.agent.lowerer import Lowerer
-from chronos.agent.models import CreateTaskOperation
+from chronos.agent.models import CreateReminderOperation, CreateTaskOperation
 from chronos.agent.meaning import Answer, Span
 from chronos.agent.parser import Parser
 from chronos.agent.plan import Window
@@ -31,6 +31,34 @@ class SequenceModel:
 
 
 class PipelineTest(TestCase):
+    def test_flexible_evening_reminder_stays_symbolic_until_planner(self) -> None:
+        prompt = "今晚有空的时候提醒我交材料。"
+        item = Parser().parse("prompt-reminder", prompt).items[0]
+        start = prompt.index("交材料")
+        response = json.dumps({"meanings": [{
+            "type": "event",
+            "item_ids": [item.id],
+            "content": [{"item_id": item.id, "start": start, "end": start + 3}],
+            "kind": "reminder",
+            "request": {"type": "add"},
+            "time": {"type": "flexible", "period": "evening"},
+        }]}, ensure_ascii=False)
+        snapshot = Interpreter(StaticModel(response)).interpret((item,))
+        event = snapshot.events[0]
+        self.assertIsNone(event.time.start)
+        now = datetime(2026, 8, 17, 17, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        plan = Planner().plan(snapshot, State(int(now.timestamp() * 1000), "Asia/Shanghai"))
+        operations = Lowerer().lower(plan)
+
+        self.assertEqual(plan.changes[0].reminder.delivery, "context-aware")
+        self.assertEqual(plan.changes[0].reminder.window.start, int(datetime(
+            2026, 8, 17, 18, 0, tzinfo=ZoneInfo("Asia/Shanghai")
+        ).timestamp() * 1000))
+        self.assertIsInstance(operations[0], CreateReminderOperation)
+        self.assertEqual(operations[0].reminder.trigger_type, "window")
+        self.assertEqual(operations[0].reminder.delivery, "context-aware")
+
     def test_afternoon_japanese_lowers_without_inventing_a_slot_early(self) -> None:
         prompt = "下午安排半小时日语。"
         item = Parser().parse("prompt-1", prompt).items[0]

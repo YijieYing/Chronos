@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from chronos.agent.models import CreateTaskOperation, TaskSpec, TimelineOperation, TimeRange
+from chronos.agent.models import (
+    CreateReminderOperation,
+    CreateTaskOperation,
+    ReminderSpec,
+    TaskSpec,
+    TimelineOperation,
+    TimeRange,
+)
 from chronos.agent.plan import Plan
 
 
@@ -12,8 +19,26 @@ class Lowerer:
             raise ValueError("cannot lower a Plan with conflicts")
         operations: list[TimelineOperation] = []
         for change in plan.changes:
+            if change.reminder is not None:
+                reminder = change.reminder
+                operations.append(CreateReminderOperation(
+                    reminder.id,
+                    ReminderSpec(
+                        title=reminder.title,
+                        trigger_type=reminder.trigger,
+                        at=reminder.at,
+                        window=(
+                            TimeRange(reminder.window.start, reminder.window.end)
+                            if reminder.window is not None
+                            else None
+                        ),
+                        delivery=reminder.delivery,
+                        priority=reminder.priority,
+                    ),
+                ))
+                continue
             if change.task is None:
-                raise ValueError("first Lowerer slice supports only task creation")
+                raise ValueError("Lowerer add change requires a task or reminder draft")
             task = change.task
             operations.append(CreateTaskOperation(
                 task.id,

@@ -50,18 +50,44 @@ class TaskDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class ReminderDraft:
+    id: str
+    title: str
+    trigger: str
+    at: int | None = None
+    window: Window | None = None
+    delivery: str = "exact"
+    priority: int = 3
+
+    def __post_init__(self) -> None:
+        if not self.id or not self.title.strip() or not 1 <= self.priority <= 5:
+            raise ValueError("reminder draft requires id, title, and priority")
+        if self.trigger == "time":
+            if self.at is None or self.window is not None or self.delivery != "exact":
+                raise ValueError("point reminder requires exact time delivery")
+        elif self.trigger == "window":
+            if self.at is not None or self.window is None:
+                raise ValueError("window reminder requires a window")
+            if self.delivery not in {"exact", "context-aware"}:
+                raise ValueError("unsupported reminder delivery")
+        else:
+            raise ValueError("reminder trigger must be time or window")
+
+
+@dataclass(frozen=True, slots=True)
 class Change:
     event_id: str
     request: RequestKind
     task: TaskDraft | None = None
+    reminder: ReminderDraft | None = None
     target_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.event_id:
             raise ValueError("change requires a source Event")
         if self.request == RequestKind.ADD:
-            if self.task is None or self.target_id is not None:
-                raise ValueError("add change requires only a task draft")
+            if (self.task is None) == (self.reminder is None) or self.target_id is not None:
+                raise ValueError("add change requires exactly one draft")
         elif self.target_id is None:
             raise ValueError("edit/delete change requires a target")
 

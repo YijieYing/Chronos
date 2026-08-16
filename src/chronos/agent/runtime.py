@@ -10,6 +10,7 @@ from chronos.agent.log_service import ChronosLogService
 from chronos.agent.models import (
     AdjustmentTransaction,
     AgentOperation,
+    CreateReminderOperation,
     CreateTaskOperation,
     LogEventType,
     OperationState,
@@ -231,6 +232,38 @@ class ChronosRuntime:
                 preferred_start=datetime.fromtimestamp(task.start / 1000, UTC),
                 task_type=task.task_type,
                 fixed=task.fixed,
+                source="agent",
+            )
+            return
+        if isinstance(executable, CreateReminderOperation):
+            if self._reminders is None:
+                raise ValueError("Reminder service is unavailable")
+            reminder = executable.reminder
+            if reminder.at is not None:
+                self._guard_time(reminder.at, operation)
+            elif reminder.window is not None:
+                self._guard_time(reminder.window.start, operation)
+            self._reminders.create(
+                reminder_id=executable.reminder_id,
+                title=reminder.title,
+                trigger_type=reminder.trigger_type,
+                trigger_at=(
+                    datetime.fromtimestamp(reminder.at / 1000, UTC)
+                    if reminder.at is not None
+                    else None
+                ),
+                window_start=(
+                    datetime.fromtimestamp(reminder.window.start / 1000, UTC)
+                    if reminder.window is not None
+                    else None
+                ),
+                window_end=(
+                    datetime.fromtimestamp(reminder.window.end / 1000, UTC)
+                    if reminder.window is not None
+                    else None
+                ),
+                delivery=reminder.delivery,
+                priority=reminder.priority,
                 source="agent",
             )
             return
