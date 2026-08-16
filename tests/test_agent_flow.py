@@ -157,6 +157,8 @@ class FlowTest(TestCase):
             self.assertEqual(persisted.plan.snapshot_id, persisted.snapshot.id)
             self.assertEqual(persisted.proposal.plan_id, persisted.plan.id)
             self.assertEqual(len(persisted.compiled_operations), 1)
+            self.assertEqual(len(persisted.projections), 1)
+            self.assertEqual(persisted.projections[0].metadata["title"], "日语")
 
             runtime.execute(persisted, persisted.compiled_operations)
 

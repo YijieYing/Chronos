@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from chronos.agent.interpreter import Interpreter
 from chronos.agent.log_service import ChronosLogService
@@ -19,7 +19,11 @@ from chronos.agent.models import (
     LogEventType,
     OperationScope,
     OperationState,
+    ProjectionKind,
+    ProjectionVisualState,
     ProposalSnapshot,
+    TimelineProjection,
+    TimelineReference,
     TimelineOperation,
     TimeRange,
 )
@@ -128,6 +132,8 @@ class Flow:
                 state = OperationState.FAILED
                 failure = str(error)
         operation_id = operation_id or str(uuid4())
+        projections = _projections(operation_id, executable)
+        references = tuple(item.target for item in projections)
         summary = (
             plan.explanation if plan is not None
             else directive.response if directive and directive.response
@@ -149,8 +155,8 @@ class Flow:
             ),
             unresolved_questions=questions,
             compiled_operations=executable,
-            projections=(),
-            references=(),
+            projections=projections,
+            references=references,
             scope=_scope(executable),
             ambiguity=0.5 if questions else 0,
             risk=0.1 if executable else 0,
@@ -221,3 +227,39 @@ def _scope(operations: tuple[TimelineOperation, ...]) -> OperationScope:
             if operation.reminder.window is not None:
                 ranges.append(operation.reminder.window)
     return OperationScope(tuple(task_ids), tuple(reminder_ids), tuple(ranges))
+
+
+def _projections(
+    operation_id: str,
+    operations: tuple[TimelineOperation, ...],
+) -> tuple[TimelineProjection, ...]:
+    result: list[TimelineProjection] = []
+    for index, operation in enumerate(operations):
+        if isinstance(operation, CreateTaskOperation):
+            target = TimelineReference("task", id=operation.task_id)
+            start = operation.task.start
+            end = start + operation.task.duration_minutes * 60_000
+            metadata = {"title": operation.task.title, "kind": "task"}
+        elif isinstance(operation, CreateReminderOperation):
+            target = TimelineReference("reminder", id=operation.reminder_id)
+            if operation.reminder.at is not None:
+                start = operation.reminder.at
+                end = start + 1
+            else:
+                assert operation.reminder.window is not None
+                start = operation.reminder.window.start
+                end = operation.reminder.window.end
+            metadata = {"title": operation.reminder.title, "kind": "reminder"}
+        else:
+            continue
+        result.append(TimelineProjection(
+            id=str(uuid5(NAMESPACE_URL, f"{operation_id}:projection:{index}")),
+            operation_id=operation_id,
+            type=ProjectionKind.PROPOSAL,
+            target=target,
+            visual_state=ProjectionVisualState.PROPOSED,
+            start=start,
+            end=end,
+            metadata=metadata,
+        ))
+    return tuple(result)
