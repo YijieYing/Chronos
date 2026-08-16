@@ -243,7 +243,6 @@ class ChronosRuntimeTest(TestCase):
         proposal = ProposalSnapshot(
             operation_id,
             1,
-            (executable,),
             now,
             "canonical runtime test",
         )

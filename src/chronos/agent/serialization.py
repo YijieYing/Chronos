@@ -359,8 +359,8 @@ def _proposal_to_dict(value: ProposalSnapshot) -> dict[str, object]:
     return {
         "operation_id": value.operation_id,
         "version": value.version,
-        "operations": [timeline_operation_to_dict(item) for item in value.operations],
         "explanation": value.explanation,
+        "plan_id": value.plan_id,
         "created_at": value.created_at.isoformat(),
     }
 
@@ -369,12 +369,9 @@ def _proposal_from_dict(value: dict[str, object]) -> ProposalSnapshot:
     return ProposalSnapshot(
         operation_id=str(value["operation_id"]),
         version=int(value["version"]),
-        operations=tuple(
-            timeline_operation_from_dict(_dict(item, "proposal operation"))
-            for item in _list(value["operations"], "operations")
-        ),
-        explanation=str(value["explanation"]) if value.get("explanation") is not None else None,
         created_at=datetime.fromisoformat(str(value["created_at"])),
+        explanation=str(value["explanation"]) if value.get("explanation") is not None else None,
+        plan_id=str(value["plan_id"]) if value.get("plan_id") is not None else None,
     )
 
 

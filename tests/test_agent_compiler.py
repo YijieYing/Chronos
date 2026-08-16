@@ -53,7 +53,7 @@ class AgentCompilerTest(TestCase):
         primitive = result.operation.compiled_operations[0]
         self.assertIsInstance(primitive, CreateTaskOperation)
         self.assertEqual(primitive.task.recurrence.frequency, "daily")
-        self.assertEqual(result.operation.proposal.operations, (primitive,))
+        self.assertEqual(result.operation.compiled_operations, (primitive,))
         self.assertEqual(compiler_result_from_dict(compiler_result_to_dict(result)), result)
 
     def test_reminder_and_clarification_results_have_distinct_states(self) -> None:

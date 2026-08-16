@@ -205,7 +205,7 @@ def _compile_interpretation(
         else _interpretation_message(interpretation, operations)
     )
     proposal = (
-        ProposalSnapshot(operation_id, version, operations, now, message)
+        ProposalSnapshot(operation_id, version, now, message)
         if state == OperationState.PROPOSED and operations
         else None
     )
@@ -542,7 +542,6 @@ def _operation_from_proposal(
         ProposalSnapshot(
             operation_id=operation_id,
             version=1,
-            operations=operations,
             explanation=_message(proposal),
             created_at=now,
         )

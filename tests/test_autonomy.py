@@ -37,7 +37,7 @@ class AutonomyGateTest(TestCase):
             created_at=self.now,
             updated_at=self.now,
             version=1,
-            proposal=ProposalSnapshot("safe-reminder", 1, (primitive,), self.now),
+            proposal=ProposalSnapshot("safe-reminder", 1, self.now),
         )
 
     def test_suggest_only_never_executes(self) -> None:

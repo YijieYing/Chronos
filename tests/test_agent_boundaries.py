@@ -1,11 +1,13 @@
 import ast
 import inspect
+from dataclasses import fields
 from pathlib import Path
 from unittest import TestCase
 
 from chronos.agent.interpreter import Interpreter
 from chronos.agent.meaning import Item, Snapshot
 from chronos.agent.runtime import ChronosRuntime
+from chronos.agent.models import ProposalSnapshot
 
 
 ROOT = Path(__file__).parents[1]
@@ -83,3 +85,8 @@ class BoundaryTest(TestCase):
         self.assertNotIn("_proposals", source)
         self.assertNotIn("Planner", source)
         self.assertIn("self._apply", source)
+
+    def test_proposal_is_a_view_reference_not_an_execution_payload(self) -> None:
+        names = {item.name for item in fields(ProposalSnapshot)}
+        self.assertNotIn("operations", names)
+        self.assertIn("plan_id", names)

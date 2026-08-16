@@ -183,7 +183,6 @@ class AgentOperationStoreTest(TestCase):
             proposal=ProposalSnapshot(
                 operation_id=operation.id,
                 version=version,
-                operations=(primitive,),
                 created_at=self.now,
             ),
             version=version,

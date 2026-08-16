@@ -60,7 +60,6 @@ class AgentOperationModelTest(TestCase):
         proposal = ProposalSnapshot(
             operation_id="operation-1",
             version=2,
-            operations=(create_task, reminder),
             created_at=self.now,
             explanation="安排灵活习惯并择机提醒。",
         )

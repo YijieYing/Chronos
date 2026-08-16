@@ -382,13 +382,13 @@ class TimelineProjection:
 class ProposalSnapshot:
     operation_id: str
     version: int
-    operations: tuple[TimelineOperation, ...]
     created_at: datetime
     explanation: str | None = None
+    plan_id: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.operation_id or self.version <= 0 or not self.operations:
-            raise ValueError("proposal requires operation, positive version, and operations")
+        if not self.operation_id or self.version <= 0:
+            raise ValueError("proposal requires operation and positive version")
         _aware(self.created_at, "proposal created_at")
 
 
@@ -439,9 +439,6 @@ class AgentOperation:
             and self.proposal.version != self.version
         ):
             raise ValueError("proposed snapshot must match operation version")
-        if self.state == OperationState.PROPOSED and self.proposal:
-            if self.proposal.operations != self.compiled_operations:
-                raise ValueError("proposal operations must match compiled operations")
         if self.state == OperationState.FAILED and not self.failure_reason:
             raise ValueError("failed Operation requires a reason")
         if any(item.operation_id != self.id for item in self.projections):
