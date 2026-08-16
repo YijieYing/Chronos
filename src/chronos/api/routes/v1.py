@@ -12,9 +12,11 @@ from chronos.agent.compiler import (
     CompilerResult,
     LegacyProposalCompiler,
 )
+from chronos.agent.flow import Flow
 from chronos.agent.legacy_log import proposal_references
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.models import (
+    AgentOperation,
     AutonomyPolicy,
     ClarificationAnswer,
     InteractionContext,
@@ -23,6 +25,8 @@ from chronos.agent.models import (
     OperationState,
     TimelineReference,
     TimeRange,
+    CreateReminderOperation,
+    CreateTaskOperation,
 )
 from chronos.agent.projection_service import ProjectionService
 from chronos.agent.runtime import ChronosRuntime
@@ -40,6 +44,78 @@ from chronos.schedule.service import ScheduleService, _agenda_dict
 RouteResult = tuple[HTTPStatus, dict[str, object]]
 
 
+def _operation_view(
+    operation: AgentOperation, *, status: str | None = None
+) -> dict[str, object]:
+    """Legacy-shaped UI view derived only from canonical Operation state."""
+
+    proposed_tasks = []
+    reminder_drafts = []
+    for executable in operation.compiled_operations:
+        if isinstance(executable, CreateTaskOperation):
+            proposed_tasks.append({
+                "task_id": executable.task_id,
+                "title": executable.task.title,
+                "estimated_minutes": executable.task.duration_minutes,
+                "preferred_start": datetime.fromtimestamp(
+                    executable.task.start / 1000, UTC
+                ).isoformat(),
+                "recurrence": None,
+                "fixed": executable.task.fixed,
+            })
+        elif isinstance(executable, CreateReminderOperation):
+            reminder = executable.reminder
+            trigger = (
+                {"type": "time", "at": reminder.at}
+                if reminder.at is not None else {
+                    "type": "window",
+                    "start": reminder.window.start,
+                    "end": reminder.window.end,
+                }
+            )
+            reminder_drafts.append({"reminder": {
+                "id": executable.reminder_id,
+                "title": reminder.title,
+                "trigger": trigger,
+                "delivery": reminder.delivery,
+                "priority": reminder.priority,
+                "status": "pending",
+                "source": "agent",
+                "created_at": operation.created_at.isoformat(),
+            }})
+    mapped = {
+        OperationState.AWAITING_CLARIFICATION: "needs_clarification",
+        OperationState.PROPOSED: "pending",
+        OperationState.COMPLETED: "accepted",
+        OperationState.REJECTED: "rejected",
+        OperationState.FAILED: "failed",
+        OperationState.STALE: "stale",
+    }
+    return {
+        "proposal_id": operation.id,
+        "status": status or mapped.get(operation.state, operation.state.value),
+        "requires_confirmation": operation.state == OperationState.PROPOSED,
+        "request_text": operation.intent.source_text or "",
+        "proposed_task": None,
+        "proposed_tasks": proposed_tasks,
+        "results": [],
+        "changes": [],
+        "conflicts": [],
+        "explanation": [operation.intent.summary],
+        "parser_mode": "semantic",
+        "parser_warnings": [],
+        "clarifications": [
+            {"field": item.field, "question": item.question, "options": list(item.options)}
+            for item in operation.unresolved_questions
+        ],
+        "assumptions": [item.text for item in operation.plan.assumptions]
+        if operation.plan else [],
+        "reminder_drafts": reminder_drafts,
+        "created_at": operation.created_at.isoformat(),
+        "updated_at": operation.updated_at.isoformat(),
+    }
+
+
 class V1Router:
     def __init__(
         self,
@@ -53,6 +129,7 @@ class V1Router:
         compiler: ChronosCompiler | None = None,
         runtime: ChronosRuntime | None = None,
         adjustments: AdjustmentCoordinator | None = None,
+        flow: Flow | None = None,
     ) -> None:
         self._schedule = schedule
         self._proposals = proposals
@@ -65,6 +142,7 @@ class V1Router:
         self._compiler = LegacyProposalCompiler()
         self._runtime = runtime
         self._adjustments = adjustments
+        self._flow = flow
 
     def dispatch(
         self,
@@ -284,10 +362,22 @@ class V1Router:
                 return HTTPStatus.OK, success({"deleted": True, "task_id": task_id})
 
         if method == "GET" and path == "/api/v1/proposals":
-            return HTTPStatus.OK, success({"proposals": self._proposals.list()})
+            canonical = (
+                [_operation_view(item) for item in self._operation_store.list() if item.snapshot]
+                if self._operation_store is not None else []
+            )
+            canonical_ids = {str(item["proposal_id"]) for item in canonical}
+            legacy = [
+                item for item in self._proposals.list()
+                if str(item["proposal_id"]) not in canonical_ids
+            ]
+            return HTTPStatus.OK, success({"proposals": [*canonical, *legacy]})
         if method == "POST" and path == "/api/v1/proposals":
             text = str(payload.get("text", ""))
             context = _interaction_context(payload.get("interaction_context"))
+            if self._flow is not None:
+                operation = self._flow.submit(text, context.current_time)
+                return HTTPStatus.CREATED, success(_operation_view(operation))
             compiled: CompilerResult | None = None
             if self._semantic_compiler is not None:
                 compile_context = replace(
@@ -316,6 +406,13 @@ class V1Router:
         if path.startswith(proposal_prefix):
             suffix = path.removeprefix(proposal_prefix)
             if method == "GET" and "/" not in suffix:
+                if self._operation_store is not None:
+                    try:
+                        operation = self._operation_store.get(suffix)
+                        if operation.snapshot is not None:
+                            return HTTPStatus.OK, success(_operation_view(operation))
+                    except KeyError:
+                        pass
                 return HTTPStatus.OK, success(self._proposals.get(suffix))
             if method == "POST" and suffix.endswith("/accept"):
                 proposal_id = suffix.removesuffix("/accept")
@@ -325,7 +422,19 @@ class V1Router:
                     else None
                 )
                 if self._runtime is not None:
-                    proposal, transaction = self._runtime.execute_legacy(proposal_id)
+                    operation = (
+                        self._operation_store.get(proposal_id)
+                        if self._operation_store is not None else None
+                    )
+                    if operation is not None and operation.snapshot is not None:
+                        transaction = self._runtime.execute(
+                            operation, operation.compiled_operations
+                        )
+                        proposal = _operation_view(
+                            self._operation_store.get(proposal_id), status="accepted"
+                        )
+                    else:
+                        proposal, transaction = self._runtime.execute_legacy(proposal_id)
                 else:
                     proposal = self._proposals.accept(proposal_id)
                     transaction = None
@@ -343,8 +452,15 @@ class V1Router:
                 return HTTPStatus.OK, success(proposal)
             if method == "POST" and suffix.endswith("/reject"):
                 proposal_id = suffix.removesuffix("/reject")
-                proposal = self._proposals.reject(proposal_id)
-                self._reject_operation(proposal_id)
+                current = self._operation_store.get(proposal_id) if self._operation_store else None
+                if current is not None and current.snapshot is not None:
+                    rejected = self._operation_store.transition(
+                        proposal_id, OperationState.REJECTED, expected_version=current.version
+                    )
+                    proposal = _operation_view(rejected)
+                else:
+                    proposal = self._proposals.reject(proposal_id)
+                    self._reject_operation(proposal_id)
                 self._log_proposal_event(
                     proposal, LogEventType.OPERATION_REJECTED, "已拒绝时间轴提案。"
                 )
@@ -356,11 +472,16 @@ class V1Router:
                     if self._operation_store is not None
                     else None
                 )
-                proposal = (
-                    self._runtime.revert_legacy(proposal_id)
-                    if self._runtime is not None
-                    else self._proposals.restore(proposal_id)
-                )
+                current = self._operation_store.get(proposal_id) if self._operation_store else None
+                if self._runtime is not None and current is not None and current.snapshot is not None:
+                    self._runtime.revert(proposal_id)
+                    proposal = _operation_view(current, status="restored")
+                else:
+                    proposal = (
+                        self._runtime.revert_legacy(proposal_id)
+                        if self._runtime is not None
+                        else self._proposals.restore(proposal_id)
+                    )
                 if changed_scope is not None:
                     self._timeline_changed(
                         changed_scope, exclude_operation_id=proposal_id
@@ -380,9 +501,26 @@ class V1Router:
     def _answer_clarification(
         self, operation_id: str, payload: dict[str, object]
     ) -> dict[str, object]:
-        if self._semantic_compiler is None or self._operation_store is None:
-            raise RuntimeError("semantic Compiler and OperationStore are required")
+        if self._operation_store is None:
+            raise RuntimeError("OperationStore is required")
         current = self._operation_store.get(operation_id)
+        if self._flow is not None and current.snapshot is not None:
+            answer = str(payload.get("answer", "")).strip()
+            field = str(payload.get("field", "")).strip()
+            context = _interaction_context(payload.get("interaction_context"))
+            if not answer or ":" not in field:
+                raise ValueError("semantic clarification requires an anchored answer")
+            item_id = field.split(":", 1)[0]
+            refreshed = self._flow.clarify(
+                operation_id,
+                item_id=item_id,
+                question_id=field,
+                answer=answer,
+                now=context.current_time,
+            )
+            return _operation_view(refreshed)
+        if self._semantic_compiler is None:
+            raise RuntimeError("semantic Compiler and OperationStore are required")
         if current.state != OperationState.AWAITING_CLARIFICATION:
             raise ValueError("operation is not awaiting clarification")
         answer = str(payload.get("answer", "")).strip()

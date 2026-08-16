@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo
 
 from chronos.agent.adjustment import AdjustmentCoordinator, AdjustmentEngine
 from chronos.agent.compiler import LLMChronosCompiler
+from chronos.agent.flow import Flow
+from chronos.agent.interpreter import Interpreter
 from chronos.agent.legacy_log import migrate_proposal_history
 from chronos.agent.log_service import ChronosLogService
 from chronos.agent.projection_service import ProjectionService
@@ -40,7 +42,11 @@ from chronos.schedule.agent_config import load_agent_config
 from chronos.schedule.agent_memory import MAX_ARCHIVE_BYTES, AgentMemoryService
 from chronos.schedule.models import TaskStatus
 from chronos.schedule.proposals import ProposalService
-from chronos.schedule.semantic_parser import SemanticScheduleCommandParser, build_command_parser
+from chronos.schedule.semantic_parser import (
+    SemanticScheduleCommandParser,
+    build_command_parser,
+    build_model,
+)
 from chronos.schedule.service import ScheduleService
 
 SERVICE_CAPABILITIES = [
@@ -389,6 +395,7 @@ def main() -> int:
         and selected_provider.base_url
     )
     command_parser = build_command_parser(agent_config, memory_service.retrieve_context)
+    model = build_model(agent_config)
     proposal_service = ProposalService(
         service, proposal_repository, command_parser, reminder_service
     )
@@ -414,6 +421,8 @@ def main() -> int:
         else None,
         runtime,
         adjustment_coordinator,
+        Flow(Interpreter(model), operation_store, service, chronos_log_service)
+        if model is not None else None,
     )
     adjustment_coordinator.scan_safely()
     root = Path(__file__).resolve().parents[3] / "web" / "dist"

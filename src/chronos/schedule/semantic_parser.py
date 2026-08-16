@@ -210,6 +210,19 @@ def build_command_parser(
     )
 
 
+def build_model(config: AgentConfig) -> TextGenerationProvider | None:
+    """Build the shared language model for the canonical Agent pipeline."""
+
+    if config.provider == "deterministic":
+        return None
+    selected = config.selected_provider()
+    if selected is None:
+        raise ValueError(f"unknown Agent provider: {config.provider}")
+    if not selected.api_key or not selected.model or not selected.base_url:
+        return None
+    return _provider(selected, config.timeout_seconds)
+
+
 class _OpenAICompatibleProvider:
     def __init__(self, config: ProviderConfig, timeout: float) -> None:
         self._config = config
