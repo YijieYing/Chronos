@@ -5,6 +5,16 @@ from unittest import TestCase
 
 from chronos.agent.compiler import LLMChronosCompiler
 from chronos.agent.log_service import ChronosLogService
+from chronos.agent.models import (
+    AgentOperation,
+    CreateTaskOperation,
+    IntentSnapshot,
+    OperationScope,
+    OperationState,
+    ProposalSnapshot,
+    TaskSpec,
+    TimeRange,
+)
 from chronos.agent.runtime import ChronosRuntime
 from chronos.agent.service import OperationStore
 from chronos.api.routes.v1 import V1Router
@@ -150,6 +160,94 @@ class ChronosRuntimeTest(TestCase):
         assert reverted is not None
         self.assertEqual(reverted.status.value, "reverted")
         self.assertEqual(stable_reminders.list(), [])
+
+    def test_canonical_runtime_executes_operations_without_proposal_payload(self) -> None:
+        start = int(datetime(2026, 8, 17, 15, 30, tzinfo=UTC).timestamp() * 1000)
+        executable = CreateTaskOperation(
+            "task-canonical",
+            TaskSpec("日语", start, 30),
+        )
+        operation = self._canonical_operation(executable, horizon=start)
+        self.operations.create_snapshot(operation)
+
+        transaction = self.runtime.execute(operation, (executable,))
+
+        task = self.schedule.get_task("task-canonical")
+        self.assertEqual(task.title, "日语")
+        self.assertEqual(task.estimated_minutes, 30)
+        self.assertEqual(task.source, "agent")
+        self.assertEqual(transaction.operations, (executable,))
+        self.assertEqual(self.operations.get(operation.id).state, OperationState.COMPLETED)
+
+        reverted = self.runtime.revert(operation.id)
+        self.assertEqual(reverted.status.value, "reverted")
+        with self.assertRaises(KeyError):
+            self.schedule.get_task("task-canonical")
+
+    def test_canonical_runtime_rejects_prospective_work_before_horizon(self) -> None:
+        start = int(datetime(2026, 8, 17, 14, 30, tzinfo=UTC).timestamp() * 1000)
+        horizon = int(datetime(2026, 8, 17, 15, 30, tzinfo=UTC).timestamp() * 1000)
+        executable = CreateTaskOperation("task-past", TaskSpec("A", start, 30))
+        operation = self._canonical_operation(executable, horizon=horizon)
+        self.operations.create_snapshot(operation)
+
+        with self.assertRaisesRegex(ValueError, "planning horizon"):
+            self.runtime.execute(operation, (executable,))
+
+        self.assertEqual(self.operations.get(operation.id).state, OperationState.FAILED)
+        with self.assertRaises(KeyError):
+            self.schedule.get_task("task-past")
+
+    def _canonical_operation(
+        self,
+        executable: CreateTaskOperation,
+        *,
+        horizon: int,
+    ) -> AgentOperation:
+        now = datetime.now(UTC)
+        operation_id = f"operation-{executable.task_id}"
+        proposal = ProposalSnapshot(
+            operation_id,
+            1,
+            (executable,),
+            now,
+            "canonical runtime test",
+        )
+        return AgentOperation(
+            id=operation_id,
+            state=OperationState.PROPOSED,
+            intent=IntentSnapshot(
+                "add",
+                executable.task.title,
+                attributes={
+                    "planning_mode": "prospective",
+                    "planning_horizon_start": horizon,
+                },
+            ),
+            unresolved_questions=(),
+            compiled_operations=(executable,),
+            projections=(),
+            references=(),
+            scope=OperationScope(
+                task_ids=(executable.task_id,),
+                time_ranges=(
+                    TimeRange(
+                        executable.task.start,
+                        executable.task.start
+                        + executable.task.duration_minutes * 60_000,
+                    ),
+                ),
+            ),
+            ambiguity=0,
+            risk=0,
+            impact=0.1,
+            reversible=True,
+            required_autonomy_level=0,
+            created_at=now,
+            updated_at=now,
+            version=1,
+            proposal=proposal,
+        )
 
 
 class _FailSecondReminderRepository(SQLiteReminderRepository):

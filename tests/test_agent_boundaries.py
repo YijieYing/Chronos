@@ -1,9 +1,11 @@
 import ast
+import inspect
 from pathlib import Path
 from unittest import TestCase
 
 from chronos.agent.interpreter import Interpreter
 from chronos.agent.meaning import Item, Snapshot
+from chronos.agent.runtime import ChronosRuntime
 
 
 ROOT = Path(__file__).parents[1]
@@ -75,3 +77,9 @@ class BoundaryTest(TestCase):
         }
         self.assertIn("chronos.agent.models", imports)
         self.assertFalse(any(module.startswith("chronos.schedule") for module in imports))
+
+    def test_canonical_runtime_does_not_execute_proposal_payload(self) -> None:
+        source = inspect.getsource(ChronosRuntime.execute)
+        self.assertNotIn("_proposals", source)
+        self.assertNotIn("Planner", source)
+        self.assertIn("self._apply", source)

@@ -325,7 +325,7 @@ class V1Router:
                     else None
                 )
                 if self._runtime is not None:
-                    proposal, transaction = self._runtime.execute(proposal_id)
+                    proposal, transaction = self._runtime.execute_legacy(proposal_id)
                 else:
                     proposal = self._proposals.accept(proposal_id)
                     transaction = None
@@ -357,7 +357,7 @@ class V1Router:
                     else None
                 )
                 proposal = (
-                    self._runtime.revert(proposal_id)
+                    self._runtime.revert_legacy(proposal_id)
                     if self._runtime is not None
                     else self._proposals.restore(proposal_id)
                 )
@@ -572,7 +572,7 @@ class V1Router:
         if not decision.execute:
             return proposal
         if self._runtime is not None:
-            applied, transaction = self._runtime.execute(operation.id)
+            applied, transaction = self._runtime.execute_legacy(operation.id)
         else:
             applied = self._proposals.accept(operation.id)
             transaction = None

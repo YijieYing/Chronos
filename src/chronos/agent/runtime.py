@@ -10,9 +10,11 @@ from chronos.agent.log_service import ChronosLogService
 from chronos.agent.models import (
     AdjustmentTransaction,
     AgentOperation,
+    CreateTaskOperation,
     LogEventType,
     OperationState,
     ScheduleSnapshot,
+    TimelineOperation,
     TransactionStatus,
 )
 from chronos.agent.ports import AdjustmentTransactionRepository
@@ -39,9 +41,83 @@ class ChronosRuntime:
         self._transactions = transactions
         self._log = chronos_log
 
-    def execute(self, operation_id: str) -> tuple[dict[str, object], AdjustmentTransaction]:
+    def execute(
+        self,
+        operation: AgentOperation,
+        operations: tuple[TimelineOperation, ...],
+    ) -> AdjustmentTransaction:
+        """Execute the canonical executable IR without returning to planning.
+
+        This is the only Runtime entry point for the new pipeline.  The explicit
+        ``operations`` argument makes the executable boundary visible and guards
+        against a Proposal view becoming a second source of truth.
+        """
+
+        self._validate_execution(operation, operations)
+        before = self._snapshot()
+        approved = self._operations.transition(
+            operation.id, OperationState.APPROVED, expected_version=operation.version
+        )
+        executing = self._operations.transition(
+            operation.id, OperationState.EXECUTING, expected_version=approved.version
+        )
+        try:
+            for executable in operations:
+                self._apply(executable, operation)
+            after = self._snapshot()
+            transaction = AdjustmentTransaction(
+                id=str(uuid4()),
+                operation_id=operation.id,
+                before_state=before,
+                operations=operations,
+                after_state=after,
+                status=TransactionStatus.APPLIED,
+                created_at=datetime.now(UTC),
+            )
+            self._transactions.save(transaction)
+            self._operations.transition(
+                operation.id,
+                OperationState.COMPLETED,
+                expected_version=executing.version,
+            )
+            if self._log is not None:
+                self._log.append(
+                    LogEventType.OPERATION_COMPLETED,
+                    "已应用时间轴调整。",
+                    operation_id=operation.id,
+                    references=operation.references,
+                    metadata={"transaction_id": transaction.id},
+                )
+            return transaction
+        except Exception as error:
+            self._rollback_scope(operation, before)
+            self._operations.transition(
+                operation.id,
+                OperationState.FAILED,
+                expected_version=executing.version,
+                failure_reason=str(error),
+            )
+            if self._log is not None:
+                self._log.append(
+                    LogEventType.OPERATION_FAILED,
+                    "执行失败，已回滚到操作前状态。",
+                    operation_id=operation.id,
+                    references=operation.references,
+                    metadata={"failure_reason": str(error), "rolled_back": True},
+                )
+            raise
+
+    def execute_legacy(
+        self, operation_id: str
+    ) -> tuple[dict[str, object], AdjustmentTransaction]:
+        """Compatibility boundary for the old ProposalService execution path.
+
+        New pipeline code must never call this method.  It remains only until
+        the existing API route has migrated to Plan -> Operations -> Runtime.
+        """
+
         operation = self._operations.get(operation_id)
-        self._validate(operation)
+        self._validate_legacy(operation)
         before = self._snapshot()
         approved = self._operations.transition(
             operation_id, OperationState.APPROVED, expected_version=operation.version
@@ -89,7 +165,31 @@ class ChronosRuntime:
                 )
             raise
 
-    def revert(self, operation_id: str) -> dict[str, object]:
+    def revert(self, operation_id: str) -> AdjustmentTransaction:
+        """Restore the canonical transaction snapshot without ProposalService."""
+
+        transaction = self._transactions.get_by_operation(operation_id)
+        if transaction is None:
+            raise KeyError(operation_id)
+        if transaction.status != TransactionStatus.APPLIED:
+            raise ValueError("transaction is already reverted")
+        operation = self._operations.get(operation_id)
+        self._rollback_scope(operation, transaction.before_state)
+        reverted = replace(transaction, status=TransactionStatus.REVERTED)
+        self._transactions.save(reverted)
+        if self._log is not None:
+            self._log.append(
+                LogEventType.UNDO,
+                "已恢复操作前的时间轴状态。",
+                operation_id=operation_id,
+                references=operation.references,
+                metadata={"transaction_id": transaction.id},
+            )
+        return reverted
+
+    def revert_legacy(self, operation_id: str) -> dict[str, object]:
+        """Compatibility boundary for legacy proposal-shaped restore output."""
+
         transaction = self._transactions.get_by_operation(operation_id)
         if transaction is None:
             raise KeyError(operation_id)
@@ -99,16 +199,53 @@ class ChronosRuntime:
         self._transactions.save(replace(transaction, status=TransactionStatus.REVERTED))
         return proposal
 
-    def _validate(self, operation: AgentOperation) -> None:
+    def _validate_execution(
+        self,
+        operation: AgentOperation,
+        operations: tuple[TimelineOperation, ...],
+    ) -> None:
         if operation.state != OperationState.PROPOSED:
             raise ValueError("Runtime requires a proposed Operation")
-        if not operation.compiled_operations or operation.proposal is None:
+        if not operations or operation.proposal is None:
             raise ValueError("Runtime requires validated compiled operations")
+        if operations != operation.compiled_operations:
+            raise ValueError("Runtime operations must match the Operation snapshot")
         if not operation.reversible:
             raise ValueError("first-version Runtime only executes reversible Operations")
+
+    def _validate_legacy(self, operation: AgentOperation) -> None:
+        self._validate_execution(operation, operation.compiled_operations)
         proposal = self._proposals.get(operation.id)
         if proposal.get("status") != "pending":
             raise ValueError("Runtime proposal is not pending")
+
+    def _apply(self, executable: TimelineOperation, operation: AgentOperation) -> None:
+        if isinstance(executable, CreateTaskOperation):
+            self._guard_time(executable.task.start, operation)
+            task = executable.task
+            self._schedule.create_scheduled_task(
+                task_id=executable.task_id,
+                title=task.title,
+                estimated_minutes=task.duration_minutes,
+                priority=task.adjustment_policy.priority,
+                preferred_start=datetime.fromtimestamp(task.start / 1000, UTC),
+                task_type=task.task_type,
+                fixed=task.fixed,
+                source="agent",
+            )
+            return
+        raise ValueError(f"Runtime does not support operation type: {executable.type}")
+
+    @staticmethod
+    def _guard_time(start: int, operation: AgentOperation) -> None:
+        mode = str(operation.intent.attributes.get("planning_mode", "prospective"))
+        if mode == "historical":
+            return
+        horizon = operation.intent.attributes.get("planning_horizon_start")
+        if not isinstance(horizon, int):
+            raise ValueError("prospective Operation requires planning_horizon_start")
+        if start < horizon:
+            raise ValueError("prospective Operation cannot schedule before its planning horizon")
 
     def _snapshot(self) -> ScheduleSnapshot:
         tasks = tuple(_task_dict(item) for item in self._schedule.list_tasks())
