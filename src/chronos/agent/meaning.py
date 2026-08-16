@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +325,8 @@ class Event:
         source_ids = set(self.item_ids)
         if any(item.item_id not in source_ids for item in self.content):
             raise ValueError("event content must come from its source items")
+        if {item.item_id for item in self.content} != source_ids:
+            raise ValueError("event content must represent every source item")
         if any(item.item_id not in source_ids for item in (*self.gaps, *self.residue)):
             raise ValueError("event gaps and residue must anchor a source item")
         relation_ids = {item.id for item in self.relations}
@@ -357,9 +358,6 @@ class Directive:
             raise ValueError("directive id, item, and content are required")
         if any(item.item_id != self.item_id for item in self.content):
             raise ValueError("directive content must come from its item")
-
-
-type Meaning = Event | Directive
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,11 +405,3 @@ class Snapshot:
         directive_ids = {directive.id for directive in self.directives}
         if len(directive_ids) != len(self.directives):
             raise ValueError("snapshot directive ids must be unique")
-
-
-class Interpreter(Protocol):
-    def interpret(
-        self,
-        items: tuple[Item, ...],
-        previous: Snapshot | None = None,
-    ) -> Snapshot: ...
