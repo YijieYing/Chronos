@@ -25,6 +25,16 @@ class StaticModel:
         return self.response
 
 
+class SequenceModel:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.prompts: list[str] = []
+
+    def generate(self, _system: str, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return self.responses.pop(0)
+
+
 class InterpreterTest(TestCase):
     def test_symbolic_task_becomes_an_event_without_a_concrete_slot(self) -> None:
         prompt = "下午安排半小时日语。"
@@ -131,3 +141,66 @@ class InterpreterTest(TestCase):
         self.assertEqual(second.version, first.version + 1)
         self.assertEqual(second.answers, answered.answers)
         self.assertIn("30分钟", model.calls[-1][1])
+        previous = json.loads(model.calls[-1][1])["previous"]
+        self.assertEqual(previous["events"][0]["duration"]["minutes"], 30)
+
+    def test_combined_answer_replaces_two_items_with_one_semantic_event(self) -> None:
+        prompt = "下午安排A和B"
+        parsed = Parser(lambda _text: (Span(0, 5), Span(5, 7))).parse(
+            "prompt-combined", prompt
+        )
+        first, second = parsed.items
+        initial = json.dumps({"meanings": [
+            {
+                "type": "event",
+                "item_ids": [first.id],
+                "content": [{"item_id": first.id, "start": 4, "end": 5}],
+                "kind": "task",
+                "request": {"type": "add"},
+                "time": {"type": "period", "period": "afternoon"},
+                "duration": {"type": "exact", "minutes": 60},
+            },
+            {
+                "type": "event",
+                "item_ids": [second.id],
+                "content": [{"item_id": second.id, "start": 6, "end": 7}],
+                "kind": "task",
+                "request": {"type": "add"},
+                "time": {"type": "period", "period": "afternoon"},
+                "gaps": [{
+                    "item_id": second.id,
+                    "field": "duration",
+                    "question": "B需要多久？",
+                    "reason": "missing",
+                }],
+            },
+        ]}, ensure_ascii=False)
+        combined = json.dumps({"meanings": [{
+            "type": "event",
+            "item_ids": [first.id, second.id],
+            "content": [
+                {"item_id": first.id, "start": 4, "end": 5},
+                {"item_id": second.id, "start": 6, "end": 7},
+            ],
+            "kind": "task",
+            "request": {"type": "add"},
+            "time": {"type": "period", "period": "afternoon"},
+            "duration": {"type": "exact", "minutes": 60},
+        }]}, ensure_ascii=False)
+        model = SequenceModel([initial, combined])
+        interpreter = Interpreter(model)
+        first_snapshot = interpreter.interpret(parsed.items)
+        answered = replace(
+            first_snapshot,
+            answers=(Answer("answer-combined", second.id, "duration", "和A算在一起"),),
+        )
+
+        snapshot = interpreter.interpret(parsed.items, answered)
+
+        self.assertEqual(len(snapshot.events), 1)
+        self.assertEqual([item.text for item in snapshot.events[0].content], ["A", "B"])
+        self.assertEqual(snapshot.events[0].duration.minutes, 60)
+        self.assertEqual(snapshot.events[0].gaps, ())
+        previous = json.loads(model.prompts[-1])["previous"]
+        self.assertEqual(len(previous["events"]), 2)
+        self.assertEqual(previous["answers"][0]["text"], "和A算在一起")

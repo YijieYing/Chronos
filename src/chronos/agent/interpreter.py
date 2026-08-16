@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import asdict
 from typing import Protocol
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -375,19 +376,10 @@ def _residue(
 def _previous(previous: Snapshot | None) -> dict[str, object] | None:
     if previous is None:
         return None
-    return {
-        "snapshot_id": previous.id,
-        "version": previous.version,
-        "answers": [
-            {
-                "id": item.id,
-                "item_id": item.item_id,
-                "question_id": item.question_id,
-                "text": item.text,
-            }
-            for item in previous.answers
-        ],
-    }
+    # Clarification recompiles the full semantic working state.  Answers are
+    # evidence attached to that state, not a transcript from which the model
+    # must guess all previously established meaning again.
+    return asdict(previous)
 
 
 def _json(response: str) -> dict[str, object]:
