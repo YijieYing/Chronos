@@ -117,7 +117,7 @@ class ChronosRuntime:
         for task in self._schedule.list_tasks():
             if task.preferred_start is not None:
                 target = task.preferred_start.date().isoformat()
-                versions[target] = self._schedule.current_plan_version(
+                versions[target] = self._schedule.current_agenda_version(
                     task.preferred_start.date()
                 )
         return ScheduleSnapshot(datetime.now(UTC), tasks, reminders, versions)

@@ -15,7 +15,7 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-class PlanStatus(StrEnum):
+class AgendaStatus(StrEnum):
     DRAFT = "draft"
     ACTIVE = "active"
     SUPERSEDED = "superseded"
@@ -128,12 +128,12 @@ class UnscheduledTask:
 
 
 @dataclass(frozen=True, slots=True)
-class Plan:
-    plan_id: str
+class Agenda:
+    agenda_id: str
     version: int
     target_date: date
     timezone: str
-    status: PlanStatus
+    status: AgendaStatus
     created_at: datetime
     blocks: tuple[ScheduleBlock, ...]
     unscheduled: tuple[UnscheduledTask, ...] = ()

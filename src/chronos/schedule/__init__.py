@@ -1,10 +1,10 @@
-"""Schedule bounded context: tasks, constraints, plans, and versioned activation."""
+"""Schedule bounded context: tasks, constraints, agendas, and versioned activation."""
 
 from chronos.schedule.models import (
     AvailabilityWindow,
     FixedBlock,
-    Plan,
-    PlanStatus,
+    Agenda,
+    AgendaStatus,
     ScheduleBlock,
     Task,
     TaskStatus,
@@ -16,8 +16,8 @@ __all__ = [
     "AvailabilityWindow",
     "DailyPlanner",
     "FixedBlock",
-    "Plan",
-    "PlanStatus",
+    "Agenda",
+    "AgendaStatus",
     "ScheduleBlock",
     "ScheduleService",
     "Task",

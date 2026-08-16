@@ -35,7 +35,7 @@ from chronos.reminders.service import ReminderService, reminder_dict
 from chronos.schedule.agent_memory import AgentMemoryService
 from chronos.schedule.models import Task
 from chronos.schedule.proposals import ProposalService
-from chronos.schedule.service import ScheduleService, _plan_dict
+from chronos.schedule.service import ScheduleService, _agenda_dict
 
 RouteResult = tuple[HTTPStatus, dict[str, object]]
 
@@ -253,7 +253,7 @@ class V1Router:
             return HTTPStatus.CREATED, success(
                 {
                     "task_id": task.task_id,
-                    "plan": _plan_dict(plan),
+                    "plan": _agenda_dict(plan),
                     "timeline": self._schedule.timeline(),
                 }
             )
@@ -272,7 +272,7 @@ class V1Router:
                 return HTTPStatus.OK, success(
                     {
                         "task_id": task.task_id,
-                        "plan": _plan_dict(plan),
+                        "plan": _agenda_dict(plan),
                         "timeline": self._schedule.timeline(),
                     }
                 )

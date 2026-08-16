@@ -11,8 +11,8 @@ from pathlib import Path
 from chronos.schedule.models import (
     BlockStatus,
     FixedBlock,
-    Plan,
-    PlanStatus,
+    Agenda,
+    AgendaStatus,
     ScheduleBlock,
     Task,
     TaskStatus,
@@ -37,6 +37,8 @@ class SQLiteScheduleRepository:
             connection.executescript(
                 """
                 PRAGMA journal_mode = WAL;
+                -- Legacy storage names stay stable while the Python domain calls this Agenda.
+                -- A later migration can rename plans/plan_id without blocking the Agent Plan.
                 CREATE TABLE IF NOT EXISTS schedule_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -196,12 +198,12 @@ class SQLiteScheduleRepository:
             ).fetchone()
         return int(row["version"])
 
-    def save_plan(self, plan: Plan) -> None:
+    def save_agenda(self, plan: Agenda) -> None:
         with closing(self._connect()) as connection, connection:
             connection.execute(
                 "INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    plan.plan_id,
+                    plan.agenda_id,
                     plan.version,
                     plan.target_date.isoformat(),
                     plan.timezone,
@@ -215,7 +217,7 @@ class SQLiteScheduleRepository:
                 [
                     (
                         block.block_id,
-                        plan.plan_id,
+                        plan.agenda_id,
                         block.task_id,
                         block.title,
                         block.start_at.isoformat(),
@@ -230,7 +232,7 @@ class SQLiteScheduleRepository:
                 "INSERT INTO unscheduled_tasks VALUES (?, ?, ?, ?, ?)",
                 [
                     (
-                        plan.plan_id,
+                        plan.agenda_id,
                         item.task_id,
                         item.title,
                         item.remaining_minutes,
@@ -240,14 +242,14 @@ class SQLiteScheduleRepository:
                 ],
             )
 
-    def get_plan(self, plan_id: str) -> Plan | None:
+    def get_agenda(self, plan_id: str) -> Agenda | None:
         with closing(self._connect()) as connection, connection:
             row = connection.execute("SELECT * FROM plans WHERE plan_id = ?", (plan_id,)).fetchone()
             if row is None:
                 return None
-            return self._plan_from_row(connection, row)
+            return self._agenda_from_row(connection, row)
 
-    def latest_plan(self, target_date: date) -> Plan | None:
+    def latest_agenda(self, target_date: date) -> Agenda | None:
         with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT * FROM plans WHERE target_date = ? ORDER BY version DESC LIMIT 1",
@@ -255,9 +257,9 @@ class SQLiteScheduleRepository:
             ).fetchone()
             if row is None:
                 return None
-            return self._plan_from_row(connection, row)
+            return self._agenda_from_row(connection, row)
 
-    def activate_plan(self, plan_id: str) -> Plan:
+    def activate_agenda(self, plan_id: str) -> Agenda:
         with closing(self._connect()) as connection, connection:
             row = connection.execute("SELECT * FROM plans WHERE plan_id = ?", (plan_id,)).fetchone()
             if row is None:
@@ -265,62 +267,62 @@ class SQLiteScheduleRepository:
             connection.execute(
                 "UPDATE plans SET status = ? WHERE target_date = ? AND status = ?",
                 (
-                    PlanStatus.SUPERSEDED.value,
+                    AgendaStatus.SUPERSEDED.value,
                     row["target_date"],
-                    PlanStatus.ACTIVE.value,
+                    AgendaStatus.ACTIVE.value,
                 ),
             )
             connection.execute(
                 "UPDATE plans SET status = ? WHERE plan_id = ?",
-                (PlanStatus.ACTIVE.value, plan_id),
+                (AgendaStatus.ACTIVE.value, plan_id),
             )
-        plan = self.get_plan(plan_id)
+        plan = self.get_agenda(plan_id)
         assert plan is not None
         return plan
 
-    def apply_task_plan_batch(self, tasks: list[Task], plans: list[Plan]) -> None:
+    def apply_task_agenda_batch(self, tasks: list[Task], plans: list[Agenda]) -> None:
         """Atomically persist task series and activate every previewed daily plan."""
         with closing(self._connect()) as connection, connection:
             for task in tasks:
                 _save_task(connection, task)
             for plan in plans:
-                _save_plan(connection, plan)
+                _save_agenda(connection, plan)
                 connection.execute(
                     "UPDATE plans SET status = ? WHERE target_date = ? "
                     "AND status = ? AND plan_id != ?",
                     (
-                        PlanStatus.SUPERSEDED.value,
+                        AgendaStatus.SUPERSEDED.value,
                         plan.target_date.isoformat(),
-                        PlanStatus.ACTIVE.value,
-                        plan.plan_id,
+                        AgendaStatus.ACTIVE.value,
+                        plan.agenda_id,
                     ),
                 )
                 connection.execute(
                     "UPDATE plans SET status = ? WHERE plan_id = ?",
-                    (PlanStatus.ACTIVE.value, plan.plan_id),
+                    (AgendaStatus.ACTIVE.value, plan.agenda_id),
                 )
 
-    def replace_task_plan_batch(self, deleted_task_ids: list[str], plans: list[Plan]) -> None:
+    def replace_task_agenda_batch(self, deleted_task_ids: list[str], plans: list[Agenda]) -> None:
         with closing(self._connect()) as connection, connection:
             connection.executemany(
                 "DELETE FROM tasks WHERE task_id = ?",
                 [(value,) for value in deleted_task_ids],
             )
             for plan in plans:
-                _save_plan(connection, plan)
+                _save_agenda(connection, plan)
                 connection.execute(
                     "UPDATE plans SET status = ? WHERE target_date = ? "
                     "AND status = ? AND plan_id != ?",
                     (
-                        PlanStatus.SUPERSEDED.value,
+                        AgendaStatus.SUPERSEDED.value,
                         plan.target_date.isoformat(),
-                        PlanStatus.ACTIVE.value,
-                        plan.plan_id,
+                        AgendaStatus.ACTIVE.value,
+                        plan.agenda_id,
                     ),
                 )
                 connection.execute(
                     "UPDATE plans SET status = ? WHERE plan_id = ?",
-                    (PlanStatus.ACTIVE.value, plan.plan_id),
+                    (AgendaStatus.ACTIVE.value, plan.agenda_id),
                 )
 
     def get_setting(self, key: str) -> str | None:
@@ -339,7 +341,7 @@ class SQLiteScheduleRepository:
             )
 
     @staticmethod
-    def _plan_from_row(connection: sqlite3.Connection, row: sqlite3.Row) -> Plan:
+    def _agenda_from_row(connection: sqlite3.Connection, row: sqlite3.Row) -> Agenda:
         blocks = connection.execute(
             "SELECT * FROM schedule_blocks WHERE plan_id = ? ORDER BY start_at",
             (row["plan_id"],),
@@ -348,12 +350,12 @@ class SQLiteScheduleRepository:
             "SELECT * FROM unscheduled_tasks WHERE plan_id = ? ORDER BY title",
             (row["plan_id"],),
         ).fetchall()
-        return Plan(
-            plan_id=row["plan_id"],
+        return Agenda(
+            agenda_id=row["plan_id"],
             version=int(row["version"]),
             target_date=date.fromisoformat(row["target_date"]),
             timezone=row["timezone"],
-            status=PlanStatus(row["status"]),
+            status=AgendaStatus(row["status"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             based_on_version=row["based_on_version"],
             blocks=tuple(
@@ -441,11 +443,11 @@ def _save_task(connection: sqlite3.Connection, task: Task) -> None:
     )
 
 
-def _save_plan(connection: sqlite3.Connection, plan: Plan) -> None:
+def _save_agenda(connection: sqlite3.Connection, plan: Agenda) -> None:
     connection.execute(
         "INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
-            plan.plan_id,
+            plan.agenda_id,
             plan.version,
             plan.target_date.isoformat(),
             plan.timezone,
@@ -459,7 +461,7 @@ def _save_plan(connection: sqlite3.Connection, plan: Plan) -> None:
         [
             (
                 block.block_id,
-                plan.plan_id,
+                plan.agenda_id,
                 block.task_id,
                 block.title,
                 block.start_at.isoformat(),
@@ -474,7 +476,7 @@ def _save_plan(connection: sqlite3.Connection, plan: Plan) -> None:
         "INSERT INTO unscheduled_tasks VALUES (?, ?, ?, ?, ?)",
         [
             (
-                plan.plan_id,
+                plan.agenda_id,
                 item.task_id,
                 item.title,
                 item.remaining_minutes,

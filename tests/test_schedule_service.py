@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 
 from chronos.infrastructure.sqlite_schedule import SQLiteScheduleRepository
-from chronos.schedule.models import PlanStatus, TaskStatus
+from chronos.schedule.models import AgendaStatus, TaskStatus
 from chronos.schedule.service import ScheduleService
 
 
@@ -31,12 +31,12 @@ class ScheduleServiceTest(TestCase):
             end_time=time(13),
         )
 
-        first = self.service.generate_plan(self.day)
-        active = self.service.activate_plan(first.plan_id)
-        second = self.service.generate_plan(self.day)
+        first = self.service.generate_agenda(self.day)
+        active = self.service.activate_agenda(first.agenda_id)
+        second = self.service.generate_agenda(self.day)
         snapshot = self.service.snapshot(self.day)
 
-        self.assertEqual(active.status, PlanStatus.ACTIVE)
+        self.assertEqual(active.status, AgendaStatus.ACTIVE)
         self.assertEqual(second.version, 2)
         self.assertEqual(second.based_on_version, 1)
         self.assertEqual(snapshot["type"], "chronos.schedule_snapshot")
@@ -57,9 +57,9 @@ class ScheduleServiceTest(TestCase):
             estimated_minutes=60,
             priority=3,
         )
-        first = self.service.generate_plan(self.day)
-        self.service.activate_plan(first.plan_id)
+        first = self.service.generate_agenda(self.day)
+        self.service.activate_agenda(first.agenda_id)
 
-        following = self.service.generate_plan(date(2026, 7, 21))
+        following = self.service.generate_agenda(date(2026, 7, 21))
 
         self.assertFalse(any(block.task_id == task.task_id for block in following.blocks))

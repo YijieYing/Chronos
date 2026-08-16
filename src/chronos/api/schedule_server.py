@@ -165,12 +165,12 @@ class ScheduleRequestHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True}, HTTPStatus.CREATED)
                 return
             if self.path == "/api/plans/generate":
-                plan = self.service.generate_plan(date.fromisoformat(str(payload["date"])))
-                self._json({"ok": True, "plan_id": plan.plan_id}, HTTPStatus.CREATED)
+                plan = self.service.generate_agenda(date.fromisoformat(str(payload["date"])))
+                self._json({"ok": True, "plan_id": plan.agenda_id}, HTTPStatus.CREATED)
                 return
             if self.path.startswith("/api/plans/") and self.path.endswith("/activate"):
                 plan_id = self.path.removeprefix("/api/plans/").removesuffix("/activate")
-                self.service.activate_plan(plan_id)
+                self.service.activate_agenda(plan_id)
                 self._json({"ok": True})
                 return
             self._error(HTTPStatus.NOT_FOUND, "endpoint not found")

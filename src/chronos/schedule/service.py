@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from chronos.schedule.models import (
     AvailabilityWindow,
     FixedBlock,
-    Plan,
+    Agenda,
     Task,
     TaskStatus,
 )
@@ -92,19 +92,19 @@ class ScheduleService:
         self._repository.save_task(task)
         return task
 
-    def create_scheduled_task(self, **values) -> tuple[Task, Plan]:
+    def create_scheduled_task(self, **values) -> tuple[Task, Agenda]:
         task = self.create_task(splittable=False, **values)
         if task.preferred_start is None:
             self._repository.delete_task(task.task_id)
             raise ValueError("scheduled tasks require preferred_start")
         try:
-            plan = self.generate_plan(task.preferred_start.date())
-            return task, self.activate_plan(plan.plan_id)
+            plan = self.generate_agenda(task.preferred_start.date())
+            return task, self.activate_agenda(plan.agenda_id)
         except Exception:
             self._repository.delete_task(task.task_id)
             raise
 
-    def update_scheduled_task(self, task_id: str, **values) -> tuple[Task, Plan]:
+    def update_scheduled_task(self, task_id: str, **values) -> tuple[Task, Agenda]:
         previous = self._repository.get_task(task_id)
         if previous is None:
             raise KeyError(task_id)
@@ -113,8 +113,8 @@ class ScheduleService:
             raise ValueError("scheduled tasks require preferred_start")
         self._repository.save_task(updated)
         try:
-            plan = self.generate_plan(updated.preferred_start.date())
-            activated = self.activate_plan(plan.plan_id)
+            plan = self.generate_agenda(updated.preferred_start.date())
+            activated = self.activate_agenda(plan.agenda_id)
         except Exception:
             self._repository.save_task(previous)
             raise
@@ -122,8 +122,8 @@ class ScheduleService:
             previous.preferred_start is not None
             and previous.preferred_start.date() != updated.preferred_start.date()
         ):
-            previous_day = self.generate_plan(previous.preferred_start.date())
-            self.activate_plan(previous_day.plan_id)
+            previous_day = self.generate_agenda(previous.preferred_start.date())
+            self.activate_agenda(previous_day.agenda_id)
         return updated, activated
 
     def delete_scheduled_task(self, task_id: str) -> bool:
@@ -132,11 +132,11 @@ class ScheduleService:
             return False
         deleted = self._repository.delete_task(task_id)
         if deleted and task.preferred_start is not None:
-            plan = self.generate_plan(task.preferred_start.date())
-            self.activate_plan(plan.plan_id)
+            plan = self.generate_agenda(task.preferred_start.date())
+            self.activate_agenda(plan.agenda_id)
         return deleted
 
-    def preview_with_task(self, task: Task) -> Plan:
+    def preview_with_task(self, task: Task) -> Agenda:
         if task.preferred_start is None:
             raise ValueError("proposal tasks require preferred_start")
         tasks = [
@@ -144,9 +144,9 @@ class ScheduleService:
             for existing in self._repository.list_tasks()
             if existing.task_id != task.task_id
         ]
-        return self._build_plan(task.preferred_start.date(), [*tasks, task])
+        return self._build_agenda(task.preferred_start.date(), [*tasks, task])
 
-    def preview_without_task(self, task: Task) -> Plan:
+    def preview_without_task(self, task: Task) -> Agenda:
         if task.preferred_start is None:
             raise ValueError("proposal tasks require preferred_start")
         tasks = [
@@ -154,11 +154,11 @@ class ScheduleService:
             for existing in self._repository.list_tasks()
             if existing.task_id != task.task_id
         ]
-        return self._build_plan(task.preferred_start.date(), tasks)
+        return self._build_agenda(task.preferred_start.date(), tasks)
 
     def preview_horizon(
         self, proposed_tasks: list[Task], start_date: date, days: int = 14
-    ) -> list[Plan]:
+    ) -> list[Agenda]:
         if not 1 <= days <= 90:
             raise ValueError("preview horizon must be between 1 and 90 days")
         proposed_ids = {task.task_id for task in proposed_tasks}
@@ -167,11 +167,11 @@ class ScheduleService:
         ]
         combined = [*existing, *proposed_tasks]
         return [
-            self._build_plan(start_date + timedelta(days=offset), combined)
+            self._build_agenda(start_date + timedelta(days=offset), combined)
             for offset in range(days)
         ]
 
-    def apply_horizon_batch(self, tasks: list[Task], plans: list[Plan]) -> None:
+    def apply_horizon_batch(self, tasks: list[Task], plans: list[Agenda]) -> None:
         if not tasks or not plans:
             raise ValueError("batch requires tasks and plans")
         planned_ids = {block.task_id for plan in plans for block in plan.blocks}
@@ -179,13 +179,13 @@ class ScheduleService:
             replace(task, status=TaskStatus.PLANNED) if task.task_id in planned_ids else task
             for task in tasks
         ]
-        self._repository.apply_task_plan_batch(stored_tasks, plans)
+        self._repository.apply_task_agenda_batch(stored_tasks, plans)
 
     def remove_horizon_batch(self, task_ids: list[str], target_dates: list[date]) -> None:
         removed = set(task_ids)
         remaining = [task for task in self._repository.list_tasks() if task.task_id not in removed]
-        plans = [self._build_plan(target, remaining) for target in target_dates]
-        self._repository.replace_task_plan_batch(task_ids, plans)
+        plans = [self._build_agenda(target, remaining) for target in target_dates]
+        self._repository.replace_task_agenda_batch(task_ids, plans)
 
     def get_task(self, task_id: str) -> Task:
         task = self._repository.get_task(task_id)
@@ -196,13 +196,13 @@ class ScheduleService:
     def list_tasks(self) -> list[Task]:
         return self._repository.list_tasks()
 
-    def current_plan_version(self, target_date: date) -> int | None:
-        plan = self._repository.latest_plan(target_date)
+    def current_agenda_version(self, target_date: date) -> int | None:
+        plan = self._repository.latest_agenda(target_date)
         return plan.version if plan else None
 
-    def timeline_plan_id(self, target_date: date) -> str | None:
-        plan = self._repository.latest_plan(target_date)
-        return plan.plan_id if plan else None
+    def timeline_agenda_id(self, target_date: date) -> str | None:
+        plan = self._repository.latest_agenda(target_date)
+        return plan.agenda_id if plan else None
 
     def timeline(self, horizon_days: int = 14) -> dict[str, object]:
         if not 1 <= horizon_days <= 90:
@@ -220,10 +220,10 @@ class ScheduleService:
                 if task_occurrence(task, target) is not None:
                     recurring_dates.add(target)
         for target in sorted(recurring_dates):
-            if self._repository.latest_plan(target) is None:
-                plan = self._build_plan(target, tasks)
-                self._repository.save_plan(plan)
-                self.activate_plan(plan.plan_id)
+            if self._repository.latest_agenda(target) is None:
+                plan = self._build_agenda(target, tasks)
+                self._repository.save_agenda(plan)
+                self.activate_agenda(plan.agenda_id)
 
         projected: list[dict[str, object]] = []
         for task in tasks:
@@ -231,7 +231,7 @@ class ScheduleService:
                 continue
             if task.recurrence is None:
                 target = task.preferred_start.date()
-                projected.append(_timeline_task_dict(task, self._repository.latest_plan(target)))
+                projected.append(_timeline_task_dict(task, self._repository.latest_agenda(target)))
                 continue
             start = max(today, task.preferred_start.date())
             for offset in range(horizon_days):
@@ -239,7 +239,7 @@ class ScheduleService:
                 occurrence = task_occurrence(task, target)
                 if occurrence is None:
                     continue
-                plan = self._repository.latest_plan(target)
+                plan = self._repository.latest_agenda(target)
                 item = _timeline_task_dict(occurrence, plan)
                 item["series_id"] = task.task_id
                 item["series_start"] = int(task.preferred_start.timestamp() * 1000)
@@ -282,8 +282,8 @@ class ScheduleService:
             imported += 1
             target_dates.add(start.date())
         for target in sorted(target_dates):
-            plan = self.generate_plan(target)
-            self.activate_plan(plan.plan_id)
+            plan = self.generate_agenda(target)
+            self.activate_agenda(plan.agenda_id)
         return imported
 
     def set_task_status(self, task_id: str, status: TaskStatus) -> Task:
@@ -318,12 +318,12 @@ class ScheduleService:
     def delete_fixed_block(self, block_id: str) -> bool:
         return self._repository.delete_fixed_block(block_id)
 
-    def generate_plan(self, target_date: date) -> Plan:
-        plan = self._build_plan(target_date, self._repository.list_tasks())
-        self._repository.save_plan(plan)
+    def generate_agenda(self, target_date: date) -> Agenda:
+        plan = self._build_agenda(target_date, self._repository.list_tasks())
+        self._repository.save_agenda(plan)
         return plan
 
-    def _build_plan(self, target_date: date, tasks: list[Task]) -> Plan:
+    def _build_agenda(self, target_date: date, tasks: list[Task]) -> Agenda:
         settings = self.settings()
         zone = ZoneInfo(settings["timezone"])
         day_start = datetime.combine(target_date, time.min, zone)
@@ -331,7 +331,7 @@ class ScheduleService:
             start_at=day_start,
             end_at=day_start + timedelta(days=1),
         )
-        latest = self._repository.latest_plan(target_date)
+        latest = self._repository.latest_agenda(target_date)
         eligible_tasks = [
             task
             for task in tasks
@@ -355,8 +355,8 @@ class ScheduleService:
         )
         return plan
 
-    def activate_plan(self, plan_id: str) -> Plan:
-        plan = self._repository.activate_plan(plan_id)
+    def activate_agenda(self, plan_id: str) -> Agenda:
+        plan = self._repository.activate_agenda(plan_id)
         for task_id in {block.task_id for block in plan.blocks}:
             task = self._repository.get_task(task_id)
             if task and task.status == TaskStatus.BACKLOG:
@@ -373,7 +373,7 @@ class ScheduleService:
             "fixed_blocks": [
                 _fixed_dict(block) for block in self._repository.list_fixed_blocks(target_date)
             ],
-            "plan": _plan_dict(self._repository.latest_plan(target_date)),
+            "plan": _agenda_dict(self._repository.latest_agenda(target_date)),
         }
 
 
@@ -408,11 +408,11 @@ def _fixed_dict(block: FixedBlock) -> dict[str, object]:
     }
 
 
-def _plan_dict(plan: Plan | None) -> dict[str, object] | None:
+def _agenda_dict(plan: Agenda | None) -> dict[str, object] | None:
     if plan is None:
         return None
     return {
-        "plan_id": plan.plan_id,
+        "plan_id": plan.agenda_id,
         "version": plan.version,
         "target_date": plan.target_date.isoformat(),
         "timezone": plan.timezone,
@@ -444,7 +444,7 @@ def _plan_dict(plan: Plan | None) -> dict[str, object] | None:
     }
 
 
-def _timeline_task_dict(task: Task, plan: Plan | None) -> dict[str, object]:
+def _timeline_task_dict(task: Task, plan: Agenda | None) -> dict[str, object]:
     blocks = [block for block in plan.blocks if block.task_id == task.task_id] if plan else []
     unscheduled = (
         next((item for item in plan.unscheduled if item.task_id == task.task_id), None)
@@ -466,7 +466,7 @@ def _timeline_task_dict(task: Task, plan: Plan | None) -> dict[str, object]:
         "task_type": task.task_type,
         "source": task.source,
         "recurrence": task.recurrence,
-        "plan_id": plan.plan_id if plan else None,
+        "plan_id": plan.agenda_id if plan else None,
         "plan_version": plan.version if plan else None,
         "scheduled": bool(blocks),
         "unscheduled_reason": unscheduled.reason if unscheduled else None,

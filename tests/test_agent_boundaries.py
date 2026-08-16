@@ -47,3 +47,11 @@ class BoundaryTest(TestCase):
         }
         self.assertFalse(any(module.startswith("chronos.schedule") for module in imports))
         self.assertNotIn("chronos.agent.models", imports)
+
+    def test_schedule_releases_plan_as_the_agent_pipeline_name(self) -> None:
+        tree = ast.parse((ROOT / "src/chronos/schedule/models.py").read_text())
+        classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
+        self.assertIn("Agenda", classes)
+        self.assertIn("AgendaStatus", classes)
+        self.assertNotIn("Plan", classes)
+        self.assertNotIn("PlanStatus", classes)

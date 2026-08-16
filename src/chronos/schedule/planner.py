@@ -10,8 +10,8 @@ from chronos.schedule.constraints import calculate_free_windows, validate_plan
 from chronos.schedule.models import (
     AvailabilityWindow,
     FixedBlock,
-    Plan,
-    PlanStatus,
+    Agenda,
+    AgendaStatus,
     ScheduleBlock,
     Task,
     TaskStatus,
@@ -30,7 +30,7 @@ class DailyPlanner:
         timezone: str,
         version: int,
         based_on_version: int | None = None,
-    ) -> Plan:
+    ) -> Agenda:
         candidates = [
             occurrence
             for task in tasks
@@ -88,12 +88,12 @@ class DailyPlanner:
                     )
                 )
 
-        result = Plan(
-            plan_id=str(uuid4()),
+        result = Agenda(
+            agenda_id=str(uuid4()),
             version=version,
             target_date=target_date,
             timezone=timezone,
-            status=PlanStatus.DRAFT,
+            status=AgendaStatus.DRAFT,
             created_at=datetime.now(UTC),
             blocks=tuple(sorted(blocks, key=lambda item: item.start_at)),
             unscheduled=tuple(unscheduled),

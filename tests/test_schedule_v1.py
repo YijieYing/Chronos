@@ -742,10 +742,10 @@ class ScheduleV1Test(TestCase):
         plans = self.schedule.preview_horizon([task], date(2026, 8, 12), days=2)
 
         with self.assertRaisesRegex(sqlite3.IntegrityError, "UNIQUE constraint"):
-            self.repository.apply_task_plan_batch([task], [plans[0], plans[0]])
+            self.repository.apply_task_agenda_batch([task], [plans[0], plans[0]])
 
         self.assertIsNone(self.repository.get_task(task.task_id))
-        self.assertIsNone(self.repository.get_plan(plans[0].plan_id))
+        self.assertIsNone(self.repository.get_agenda(plans[0].agenda_id))
 
     def test_unresolved_interpretation_returns_clarification_without_planning(self) -> None:
         interpretation = AgentInterpretation(

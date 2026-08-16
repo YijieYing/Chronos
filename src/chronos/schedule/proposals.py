@@ -35,8 +35,8 @@ from chronos.schedule.commands import (
 )
 from chronos.schedule.models import (
     BlockStatus,
-    Plan,
-    PlanStatus,
+    Agenda,
+    AgendaStatus,
     ScheduleBlock,
     Task,
     TaskStatus,
@@ -45,7 +45,7 @@ from chronos.schedule.models import (
 from chronos.schedule.ports import ProposalRepository
 from chronos.schedule.service import (
     ScheduleService,
-    _plan_dict,
+    _agenda_dict,
     _task_dict,
     _timeline_task_dict,
 )
@@ -117,7 +117,7 @@ class ProposalService:
     def create_from_compiler(
         self, result: CompilerResult, now: datetime | None = None
     ) -> dict[str, object]:
-        """Plan and persist an already-compiled operation without another model call."""
+        """Persist an already-compiled operation through the legacy Proposal path."""
         operation = result.operation
         text = operation.intent.source_text or ""
         context_used = tuple(dict(item) for item in result.context_used)
@@ -377,7 +377,7 @@ class ProposalService:
             proposed, start_date, days=batch.horizon_days
         )
         versions = {
-            plan.target_date.isoformat(): self._schedule.current_plan_version(plan.target_date)
+            plan.target_date.isoformat(): self._schedule.current_agenda_version(plan.target_date)
             for plan in plans
         }
         occurrences = _batch_occurrences(proposed, plans)
@@ -402,8 +402,8 @@ class ProposalService:
             "proposed_task": occurrences[0] if occurrences else None,
             "proposed_tasks": [_task_dict(task) for task in proposed],
             "results": occurrences,
-            "draft_plan": _plan_dict(plans[0]) if plans else None,
-            "draft_plans": [_plan_dict(plan) for plan in plans],
+            "draft_plan": _agenda_dict(plans[0]) if plans else None,
+            "draft_plans": [_agenda_dict(plan) for plan in plans],
             "base_plan_version": versions.get(start_date.isoformat()),
             "base_plan_versions": versions,
             "changes": [
@@ -547,7 +547,7 @@ class ProposalService:
         if before and before.preferred_start:
             relevant_dates.add(before.preferred_start.date())
         versions = {
-            target.isoformat(): self._schedule.current_plan_version(target)
+            target.isoformat(): self._schedule.current_agenda_version(target)
             for target in relevant_dates
         }
         proposal = {
@@ -558,7 +558,7 @@ class ProposalService:
             "command": command_payload,
             "proposed_task": proposed_task,
             "results": [],
-            "draft_plan": _plan_dict(draft),
+            "draft_plan": _agenda_dict(draft),
             "base_plan_version": versions.get(draft.target_date.isoformat()),
             "base_plan_versions": versions,
             "changes": [
@@ -643,13 +643,13 @@ class ProposalService:
             if len(task_payloads) != len(commands) or not isinstance(plans_payload, list):
                 raise ValueError("batch proposal payload is incomplete")
             tasks = [_task_from_dict(item) for item in task_payloads]
-            plans = [_plan_from_dict(item) for item in plans_payload if isinstance(item, dict)]
+            plans = [_agenda_from_dict(item) for item in plans_payload if isinstance(item, dict)]
             self._schedule.apply_horizon_batch(tasks, plans)
             return self._repository.save(
                 {
                     **proposal,
                     "status": "accepted",
-                    "activated_plan_ids": [plan.plan_id for plan in plans],
+                    "activated_plan_ids": [plan.agenda_id for plan in plans],
                 }
             )
         command = proposal["command"]
@@ -670,13 +670,13 @@ class ProposalService:
             target = datetime.fromisoformat(str(before["preferred_start"])).date()
             if not self._schedule.delete_scheduled_task(str(command["task_id"])):
                 raise KeyError(command["task_id"])
-            plan_id = self._schedule.timeline_plan_id(target)
+            plan_id = self._schedule.timeline_agenda_id(target)
             updated = {**proposal, "status": "accepted", "activated_plan_id": plan_id}
             return self._repository.save(updated)
         else:
             raise ValueError(f"unsupported proposal command: {command_type}")
         return self._repository.save(
-            {**proposal, "status": "accepted", "activated_plan_id": plan.plan_id}
+            {**proposal, "status": "accepted", "activated_plan_id": plan.agenda_id}
         )
 
     def reject(self, proposal_id: str) -> dict[str, object]:
@@ -735,7 +735,7 @@ class ProposalService:
         versions = proposal.get("base_plan_versions")
         if isinstance(versions, dict):
             for value, version in versions.items():
-                current = self._schedule.current_plan_version(
+                current = self._schedule.current_agenda_version(
                     datetime.fromisoformat(value).date()
                 )
                 if current != version:
@@ -745,7 +745,7 @@ class ProposalService:
         if isinstance(proposed, dict):
             zone = ZoneInfo(self._schedule.settings()["timezone"])
             target = datetime.fromtimestamp(int(proposed["start"]) / 1000, zone).date()
-            if self._schedule.current_plan_version(target) != proposal.get("base_plan_version"):
+            if self._schedule.current_agenda_version(target) != proposal.get("base_plan_version"):
                 raise ValueError("proposal is stale; generate a new proposal")
 
 
@@ -877,7 +877,7 @@ def _task_characteristics(task_type: str) -> tuple[float, float]:
     return intensity, spectrum
 
 
-def _batch_occurrences(tasks: list[Task], plans: list[Plan]) -> list[dict[str, object]]:
+def _batch_occurrences(tasks: list[Task], plans: list[Agenda]) -> list[dict[str, object]]:
     by_id = {task.task_id: task for task in tasks}
     results: list[dict[str, object]] = []
     for plan in plans:
@@ -899,7 +899,7 @@ def _batch_occurrences(tasks: list[Task], plans: list[Plan]) -> list[dict[str, o
                     "task_type": task.task_type,
                     "source": task.source,
                     "recurrence": task.recurrence,
-                    "plan_id": plan.plan_id,
+                    "plan_id": plan.agenda_id,
                     "plan_version": plan.version,
                     "scheduled": True,
                     "unscheduled_reason": None,
@@ -931,13 +931,13 @@ def _task_from_dict(item: dict[str, object]) -> Task:
     )
 
 
-def _plan_from_dict(item: dict[str, object]) -> Plan:
-    return Plan(
-        plan_id=str(item["plan_id"]),
+def _agenda_from_dict(item: dict[str, object]) -> Agenda:
+    return Agenda(
+        agenda_id=str(item["plan_id"]),
         version=int(item["version"]),
         target_date=date.fromisoformat(str(item["target_date"])),
         timezone=str(item["timezone"]),
-        status=PlanStatus(str(item["status"])),
+        status=AgendaStatus(str(item["status"])),
         created_at=datetime.fromisoformat(str(item["created_at"])),
         based_on_version=int(item["based_on_version"])
         if item.get("based_on_version") is not None
