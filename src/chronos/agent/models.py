@@ -7,6 +7,9 @@ from datetime import datetime
 from enum import StrEnum
 from types import MappingProxyType
 
+from chronos.agent.meaning import Snapshot
+from chronos.agent.plan import Plan
+
 
 class OperationState(StrEnum):
     INTERPRETING = "interpreting"
@@ -412,6 +415,8 @@ class AgentOperation:
     version: int
     proposal: ProposalSnapshot | None = None
     failure_reason: str | None = None
+    snapshot: Snapshot | None = None
+    plan: Plan | None = None
 
     def __post_init__(self) -> None:
         if not self.id or self.version <= 0:
@@ -443,6 +448,17 @@ class AgentOperation:
             raise ValueError("failed Operation requires a reason")
         if any(item.operation_id != self.id for item in self.projections):
             raise ValueError("projection must belong to its operation")
+        if self.plan is not None:
+            if self.snapshot is None:
+                raise ValueError("Plan requires a semantic Snapshot")
+            if (
+                self.plan.snapshot_id != self.snapshot.id
+                or self.plan.snapshot_version != self.snapshot.version
+            ):
+                raise ValueError("Plan must resolve the current semantic Snapshot")
+        if self.proposal and self.proposal.plan_id is not None:
+            if self.plan is None or self.proposal.plan_id != self.plan.id:
+                raise ValueError("Proposal must reference the current Plan")
 
 
 @dataclass(frozen=True, slots=True)

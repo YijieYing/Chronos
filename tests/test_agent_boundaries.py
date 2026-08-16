@@ -90,3 +90,13 @@ class BoundaryTest(TestCase):
         names = {item.name for item in fields(ProposalSnapshot)}
         self.assertNotIn("operations", names)
         self.assertIn("plan_id", names)
+
+    def test_flow_does_not_depend_on_legacy_compiler_or_proposal_service(self) -> None:
+        tree = ast.parse((ROOT / "src/chronos/agent/flow.py").read_text())
+        imports = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        }
+        self.assertNotIn("chronos.agent.compiler", imports)
+        self.assertNotIn("chronos.schedule.proposals", imports)

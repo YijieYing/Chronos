@@ -6,6 +6,47 @@ from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime
 
+from chronos.agent.meaning import (
+    Answer,
+    Content,
+    Directive,
+    DirectiveKind,
+    Duration,
+    DurationKind,
+    Event,
+    Field,
+    Gap,
+    GapReason,
+    Item,
+    Kind,
+    Origin,
+    Period,
+    Precision,
+    Provenance,
+    Reference,
+    Relation,
+    RelationKind,
+    Request as SemanticRequest,
+    RequestKind,
+    Residue,
+    ResidueReason,
+    ResidueStatus,
+    Snapshot,
+    Span,
+    Time as SemanticTime,
+    TimeKind,
+)
+from chronos.agent.plan import (
+    Assumption,
+    Change,
+    Conflict,
+    Horizon,
+    Plan,
+    ReminderDraft,
+    TaskDraft,
+    Window,
+)
+
 from chronos.agent.models import (
     AdjustmentPolicy,
     AgentOperation,
@@ -41,7 +82,7 @@ from chronos.agent.models import (
     UpdateTaskOperation,
 )
 
-AGENT_OPERATION_SCHEMA_VERSION = 1
+AGENT_OPERATION_SCHEMA_VERSION = 2
 CHRONOS_LOG_SCHEMA_VERSION = 1
 
 
@@ -119,13 +160,16 @@ def operation_to_dict(operation: AgentOperation) -> dict[str, object]:
         "version": operation.version,
         "proposal": _proposal_to_dict(operation.proposal) if operation.proposal else None,
         "failure_reason": operation.failure_reason,
+        "snapshot": asdict(operation.snapshot) if operation.snapshot else None,
+        "plan": asdict(operation.plan) if operation.plan else None,
     }
 
 
 def operation_from_dict(payload: dict[str, object]) -> AgentOperation:
-    _keys(
-        payload,
-        {
+    version = int(payload.get("schema_version", 0))
+    if version not in {1, AGENT_OPERATION_SCHEMA_VERSION}:
+        raise ValueError("unsupported Agent Operation schema version")
+    expected = {
             "schema_version",
             "id",
             "state",
@@ -145,11 +189,10 @@ def operation_from_dict(payload: dict[str, object]) -> AgentOperation:
             "version",
             "proposal",
             "failure_reason",
-        },
-        "operation",
-    )
-    if payload["schema_version"] != AGENT_OPERATION_SCHEMA_VERSION:
-        raise ValueError("unsupported Agent Operation schema version")
+        }
+    if version == 2:
+        expected.update({"snapshot", "plan"})
+    _keys(payload, expected, "operation")
     intent = _dict(payload["intent"], "intent")
     _keys(intent, {"kind", "summary", "source_text", "attributes"}, "intent")
     questions = _list(payload["unresolved_questions"], "unresolved_questions")
@@ -187,6 +230,16 @@ def operation_from_dict(payload: dict[str, object]) -> AgentOperation:
         failure_reason=str(payload["failure_reason"])
         if payload["failure_reason"] is not None
         else None,
+        snapshot=(
+            _snapshot_from_dict(_dict(payload["snapshot"], "snapshot"))
+            if payload.get("snapshot") is not None
+            else None
+        ),
+        plan=(
+            _plan_from_dict(_dict(payload["plan"], "plan"))
+            if payload.get("plan") is not None
+            else None
+        ),
     )
 
 
@@ -372,6 +425,240 @@ def _proposal_from_dict(value: dict[str, object]) -> ProposalSnapshot:
         created_at=datetime.fromisoformat(str(value["created_at"])),
         explanation=str(value["explanation"]) if value.get("explanation") is not None else None,
         plan_id=str(value["plan_id"]) if value.get("plan_id") is not None else None,
+    )
+
+
+def _snapshot_from_dict(value: dict[str, object]) -> Snapshot:
+    items = tuple(_item_from_dict(_dict(item, "item")) for item in _list(value["items"], "items"))
+    return Snapshot(
+        id=str(value["id"]),
+        prompt_id=str(value["prompt_id"]),
+        version=int(value["version"]),
+        items=items,
+        events=tuple(
+            _event_from_dict(_dict(item, "event"))
+            for item in _list(value.get("events", []), "events")
+        ),
+        directives=tuple(
+            _directive_from_dict(_dict(item, "directive"))
+            for item in _list(value.get("directives", []), "directives")
+        ),
+        answers=tuple(
+            Answer(
+                str(item["id"]), str(item["item_id"]),
+                str(item["question_id"]), str(item["text"]),
+            )
+            for raw in _list(value.get("answers", []), "answers")
+            for item in [_dict(raw, "answer")]
+        ),
+    )
+
+
+def _item_from_dict(value: dict[str, object]) -> Item:
+    return Item(
+        str(value["id"]),
+        str(value["prompt_id"]),
+        _span_from_dict(_dict(value["span"], "span")),
+        str(value["text"]),
+    )
+
+
+def _event_from_dict(value: dict[str, object]) -> Event:
+    duration = value.get("duration")
+    return Event(
+        id=str(value["id"]),
+        item_ids=tuple(str(item) for item in _list(value["item_ids"], "item_ids")),
+        content=tuple(
+            _content_from_dict(_dict(item, "content"))
+            for item in _list(value["content"], "content")
+        ),
+        kind=Kind(str(value["kind"])),
+        request=_semantic_request_from_dict(_dict(value["request"], "request")),
+        time=_semantic_time_from_dict(_dict(value["time"], "time")),
+        duration=_duration_from_dict(_dict(duration, "duration")) if duration else None,
+        references=tuple(
+            _semantic_reference_from_dict(_dict(item, "reference"))
+            for item in _list(value.get("references", []), "references")
+        ),
+        relations=tuple(
+            _relation_from_dict(_dict(item, "relation"))
+            for item in _list(value.get("relations", []), "relations")
+        ),
+        gaps=tuple(
+            _gap_from_dict(_dict(item, "gap"))
+            for item in _list(value.get("gaps", []), "gaps")
+        ),
+        residue=tuple(
+            _residue_from_dict(_dict(item, "residue"))
+            for item in _list(value.get("residue", []), "residue")
+        ),
+        provenance=tuple(
+            Provenance(
+                Origin(str(data["source"])),
+                tuple(str(item) for item in _list(data.get("item_ids", []), "item_ids")),
+                tuple(
+                    _span_from_dict(_dict(item, "evidence"))
+                    for item in _list(data.get("evidence", []), "evidence")
+                ),
+            )
+            for raw in _list(value.get("provenance", []), "provenance")
+            for data in [_dict(raw, "provenance")]
+        ),
+    )
+
+
+def _directive_from_dict(value: dict[str, object]) -> Directive:
+    return Directive(
+        str(value["id"]),
+        str(value["item_id"]),
+        DirectiveKind(str(value["type"])),
+        tuple(
+            _content_from_dict(_dict(item, "content"))
+            for item in _list(value["content"], "content")
+        ),
+        tuple(
+            _semantic_reference_from_dict(_dict(item, "reference"))
+            for item in _list(value.get("references", []), "references")
+        ),
+        tuple(
+            _residue_from_dict(_dict(item, "residue"))
+            for item in _list(value.get("residue", []), "residue")
+        ),
+    )
+
+
+def _content_from_dict(value: dict[str, object]) -> Content:
+    return Content(
+        str(value["item_id"]),
+        _span_from_dict(_dict(value["span"], "span")),
+        str(value["text"]),
+    )
+
+
+def _semantic_request_from_dict(value: dict[str, object]) -> SemanticRequest:
+    target = value.get("target")
+    return SemanticRequest(
+        RequestKind(str(value["type"])),
+        _semantic_reference_from_dict(_dict(target, "target")) if target else None,
+        tuple(Field(str(item)) for item in _list(value.get("fields", []), "fields")),
+    )
+
+
+def _duration_from_dict(value: dict[str, object]) -> Duration:
+    return Duration(
+        DurationKind(str(value["type"])),
+        minutes=int(value["minutes"]) if value.get("minutes") is not None else None,
+        minimum=int(value["minimum"]) if value.get("minimum") is not None else None,
+        maximum=int(value["maximum"]) if value.get("maximum") is not None else None,
+    )
+
+
+def _semantic_time_from_dict(value: dict[str, object]) -> SemanticTime:
+    return SemanticTime(
+        TimeKind(str(value["type"])),
+        period=Period(str(value["period"])) if value.get("period") is not None else None,
+        start=int(value["start"]) if value.get("start") is not None else None,
+        end=int(value["end"]) if value.get("end") is not None else None,
+        relation_id=str(value["relation_id"]) if value.get("relation_id") else None,
+        text=str(value["text"]) if value.get("text") else None,
+        precision=Precision(str(value.get("precision", "exact"))),
+    )
+
+
+def _semantic_reference_from_dict(value: dict[str, object]) -> Reference:
+    return Reference(str(value["type"]), str(value["id"]))
+
+
+def _relation_from_dict(value: dict[str, object]) -> Relation:
+    return Relation(
+        str(value["id"]), RelationKind(str(value["type"])),
+        _semantic_reference_from_dict(_dict(value["target"], "target")),
+    )
+
+
+def _gap_from_dict(value: dict[str, object]) -> Gap:
+    return Gap(
+        item_id=str(value["item_id"]),
+        field=str(value["field"]),
+        question=str(value["question"]),
+        reason=GapReason(str(value["reason"])),
+        event_id=str(value["event_id"]) if value.get("event_id") else None,
+        candidates=tuple(str(item) for item in _list(value.get("candidates", []), "candidates")),
+    )
+
+
+def _residue_from_dict(value: dict[str, object]) -> Residue:
+    return Residue(
+        str(value["item_id"]),
+        _span_from_dict(_dict(value["span"], "span")),
+        str(value["text"]),
+        ResidueReason(str(value["reason"])),
+        str(value["interpreter_version"]),
+        str(value["hint"]) if value.get("hint") else None,
+        ResidueStatus(str(value.get("status", "open"))),
+    )
+
+
+def _span_from_dict(value: dict[str, object]) -> Span:
+    return Span(int(value["start"]), int(value["end"]))
+
+
+def _plan_from_dict(value: dict[str, object]) -> Plan:
+    horizon = _dict(value["horizon"], "horizon")
+    return Plan(
+        id=str(value["id"]),
+        snapshot_id=str(value["snapshot_id"]),
+        snapshot_version=int(value["snapshot_version"]),
+        horizon=Horizon(int(horizon["start"]), int(horizon["end"]), str(horizon["mode"])),
+        changes=tuple(
+            _change_from_dict(_dict(item, "change"))
+            for item in _list(value["changes"], "changes")
+        ),
+        conflicts=tuple(
+            Conflict(str(item["event_id"]), str(item["code"]), str(item["message"]))
+            for raw in _list(value.get("conflicts", []), "conflicts")
+            for item in [_dict(raw, "conflict")]
+        ),
+        assumptions=tuple(
+            Assumption(str(item["event_id"]), str(item["text"]))
+            for raw in _list(value.get("assumptions", []), "assumptions")
+            for item in [_dict(raw, "assumption")]
+        ),
+        explanation=str(value.get("explanation", "")),
+    )
+
+
+def _change_from_dict(value: dict[str, object]) -> Change:
+    task = value.get("task")
+    reminder = value.get("reminder")
+    return Change(
+        event_id=str(value["event_id"]),
+        request=RequestKind(str(value["request"])),
+        task=_task_draft_from_dict(_dict(task, "task draft")) if task else None,
+        reminder=(
+            _reminder_draft_from_dict(_dict(reminder, "reminder draft"))
+            if reminder else None
+        ),
+        target_id=str(value["target_id"]) if value.get("target_id") else None,
+    )
+
+
+def _task_draft_from_dict(value: dict[str, object]) -> TaskDraft:
+    window = value.get("window")
+    return TaskDraft(
+        str(value["id"]), str(value["title"]), int(value["start"]), int(value["duration"]),
+        Window(int(window["start"]), int(window["end"])) if isinstance(window, dict) else None,
+        _bool(value.get("fixed", False), "fixed"),
+    )
+
+
+def _reminder_draft_from_dict(value: dict[str, object]) -> ReminderDraft:
+    window = value.get("window")
+    return ReminderDraft(
+        str(value["id"]), str(value["title"]), str(value["trigger"]),
+        int(value["at"]) if value.get("at") is not None else None,
+        Window(int(window["start"]), int(window["end"])) if isinstance(window, dict) else None,
+        str(value.get("delivery", "exact")), int(value.get("priority", 3)),
     )
 
 
