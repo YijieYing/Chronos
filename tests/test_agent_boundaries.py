@@ -55,3 +55,23 @@ class BoundaryTest(TestCase):
         self.assertIn("AgendaStatus", classes)
         self.assertNotIn("Plan", classes)
         self.assertNotIn("PlanStatus", classes)
+
+    def test_planner_does_not_import_executable_operations(self) -> None:
+        tree = ast.parse((ROOT / "src/chronos/agent/planner.py").read_text())
+        imports = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        }
+        self.assertNotIn("chronos.agent.models", imports)
+        self.assertFalse(any(module.startswith("chronos.schedule") for module in imports))
+
+    def test_lowerer_is_the_only_new_layer_that_imports_executable_operations(self) -> None:
+        tree = ast.parse((ROOT / "src/chronos/agent/lowerer.py").read_text())
+        imports = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        }
+        self.assertIn("chronos.agent.models", imports)
+        self.assertFalse(any(module.startswith("chronos.schedule") for module in imports))
