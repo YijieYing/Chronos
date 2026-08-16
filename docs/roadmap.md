@@ -36,84 +36,223 @@ semantic model, planning payload, or executable truth. Runtime executes only the
 produced by Lowerer; it does not interpret language, call Planner, or reconstruct planning objects
 from lower-level operations.
 
-### Layer boundaries
+### Contract map
 
-- **Parser** only segments the original Prompt. It does not infer kind, request, time, duration, or
-  title. It asks only when the segmentation boundary itself is ambiguous.
-- **Item** is an exact contiguous source fragment with `id`, `promptId`, `span`, and `text`. Its text
-  must equal the corresponding Prompt slice.
-- **Interpreter** understands each Item. It may combine multiple Items into one Event or emit
-  multiple Events from one Item. It owns linguistic interpretation; Planner must not normally
-  reinterpret the original Prompt.
-- **Event** is the complete semantic description understood from one or more Items. It retains
-  evidence and provenance rather than model-generated replacement wording.
-- **Estimator** interprets changing user information from Monitor, Timeline, Forecast, and Profile
-  and produces State independently of Prompt interpretation.
-- **Planner** consumes Events, State, and the necessary Schedule view. It resolves constraints,
-  raises all post-Parser clarification centrally, records assumptions, and produces one Plan.
-- **Lowerer** deterministically converts Plan into the finite executable Operations union.
-- **Gate** decides proposal versus direct execution from ambiguity, impact, reversibility, risk,
-  and the selected autonomy level.
-- **Runtime** validates and transactionally executes Operations, writes Log entries, and supports
-  rollback and Undo.
+The following contracts are the implementation checklist for the diagram above. “Reads” is a
+deliberate visibility boundary: a layer should not receive earlier raw data merely because it is
+convenient.
 
-### Item, Event, and request decisions
+#### Prompt
 
-An Item contains no inferred action or timing fields. An Event contains source-backed `content[]`,
-one semantic `request`, `time`, optional `duration`, references, relations, gaps, residue, and
-provenance.
+- **Contains:** one immutable user submission, its id, original text, timestamp, selection, and
+  Operation id.
+- **Read by:** Parser. Selection is also available to Interpreter as bounded reference context.
+- **Must not become:** the semantic source of truth after Events exist.
 
-For a concrete timeline Event, the semantic request vocabulary is limited to:
+#### Parser
 
-- `add`
-- `edit`, with a target and the Event fields intended to change
-- `delete`, with a target
+- **Reads:** Prompt text and nothing from Schedule, Monitor, Profile, or executable Operations.
+- **Produces:** ordered Items whose spans point into the exact Prompt, or one source-span-anchored
+  Boundary clarification.
+- **Owns:** segmentation only.
+- **Must not:** infer titles, kinds, requests, time, duration, relations, priority, or planning
+  actions; rewrite source text; publish partial Items while a Boundary clarification is pending.
 
-These are user-level requests, not Runtime operations. Lowerer remains responsible for translating
-the Plan into executable primitives. Inputs that ask Chronos to answer rather than mutate a
-timeline object are Directives; their responses appear as first-class Chronos Log entries and may
-carry clickable Timeline references, but do not create Operations merely to display a reply.
+#### Item library
 
-Time must not use `null` for every non-concrete case. The initial vocabulary distinguishes:
+The canonical minimal Item is:
 
-- no time was expressed
-- symbolic `morning`, `afternoon`, or `evening`
-- a concrete point or range
-- flexible scheduling such as “when available”
-- relative timing linked to a Relation, such as “after A”
-- expressed but unresolved timing
+```text
+Item {
+  id
+  prompt_id
+  span { start, end }
+  text
+}
+```
 
-Approximation is precision attached to a point, range, or symbolic time rather than one catch-all
-time type.
+- `text` must equal the exact Prompt slice at `span`.
+- Items preserve language evidence; they are not task drafts.
+- One Item may later produce multiple Events. Multiple Items may later be combined into one Event.
 
-If the user says that B is included with A, Interpreter combines their source fragments into one
-Event, keeps the already established duration, and derives display text deterministically from the
-combined content. This does not require shared-duration types, `same_block`, or a merge Runtime
-operation. A relation is retained only when the events must remain independently identifiable.
+#### Interpreter
 
-### Clarification and residue
+- **Reads:** Items, current selection, clarification answers, and a minimal object index needed to
+  resolve references. It does not receive Monitor, Forecast, a complete Schedule plan, or Runtime
+  state by default.
+- **Produces:** a complete new snapshot of Events and Directives, including source evidence,
+  provenance, Gaps, and Residue.
+- **Owns:** linguistic meaning—what each Item describes, whether it is a timeline Event or a
+  Directive, Event kind, semantic add/edit/delete request, time expression, duration, reference,
+  and relation.
+- **Must:** return a typed result for every Item, even when that result is unknown or contains
+  Residue.
+- **Must not:** choose a concrete available slot, optimize the Schedule, emit executable
+  Operations, or silently invent unsupported meaning.
 
-Parser clarification anchors the ambiguous source span because Items do not yet exist. Every
-clarification after Parser must anchor a concrete Item and may additionally reference an Event or
-related Items. Answers return to the stage that owns the uncertainty and produce a complete new
-snapshot; Planner must not patch Event semantics itself.
+#### Event library
 
-Interpreter must respond to every Item. When it cannot safely express part of the language, it
-emits typed Residue with the original span and reason instead of inventing a value or failing the
-whole request. Planner may inspect Residue only to decide among:
+The first Event vocabulary is:
 
-1. continue with an explicit Plan assumption;
-2. ask an Item-anchored clarification;
-3. return a typed capability failure.
+```text
+Event {
+  id
+  item_ids[]
+  content[]       // exact Item-backed fragments
+  kind            // task | reminder | state | schedule | unknown
+  request         // add | edit(target, fields[]) | delete(target)
+  time
+  duration?
+  references[]
+  relations[]
+  gaps[]
+  residue[]
+  provenance[]
+}
+```
 
-Planner must not silently turn Residue into asserted Event semantics. Assumptions belong to Plan;
-facts inferred from Prompt or clarification belong to Event. Provenance records whether each fact
-or assumption came from Prompt, clarification, selection, Profile, Timeline, Monitor, or planning.
+- Event is semantic, not executable. `request: edit` is what the user wants changed; it is not an
+  UpdateTaskOperation.
+- Event content remains source-backed. Display text may be deterministically composed from several
+  content fragments, but the model does not replace them with a new title.
+- An Event may be partial when its uncertainty is explicitly represented by Gap or Residue.
+- Combining “A and B count together” produces one Event with both content fragments and the
+  established duration. It does not create shared-duration schema or a merge Operation.
 
-Every Residue occurrence must be persisted in a capability-gap registry with its sanitized source
-example, reason, affected Item/Event, handling outcome, and Interpreter version. During early
-development this registry will be reviewed regularly to expand Interpreter coverage and convert
-real examples into regression tests, steadily reducing how often Planner sees Residue.
+#### Time library
+
+```text
+Time =
+  none
+  | period(morning | afternoon | evening, precision)
+  | point(timestamp, precision)
+  | range(start, end, precision)
+  | flexible(optional period)
+  | relative(relation_id)
+  | unresolved(source text)
+```
+
+- `none` means the user expressed no time.
+- `unresolved` means the user did express time but Interpreter could not represent it safely.
+- Approximation is precision on a known time shape, not a synonym for missing or unresolved.
+- Relative time links to a semantic Relation; Planner resolves it to concrete time later.
+
+#### Gap
+
+- **Means:** Interpreter understands the semantic shape but a specific expressed fact is ambiguous,
+  conflicting, or unresolved—for example which of three “Research” tasks a relation targets.
+- **Contains:** Item anchor, optional Event anchor, affected semantic field, reason, candidates when
+  available, and a candidate question.
+- **Does not mean:** every optional field that the user omitted. Missing duration is not
+  automatically a Gap merely because a database model wants a number.
+- **Consumed by:** Planner, which decides whether the uncertainty materially blocks planning and
+  centrally emits clarification when required.
+
+#### Residue
+
+- **Means:** an exact source fragment that the current Event vocabulary or Interpreter version
+  cannot safely express.
+- **Contains:** Item anchor, source span/text, typed reason, optional capability hint, Interpreter
+  version, and eventual handling outcome.
+- **Consumed by:** Planner only to decide whether to continue with an explicit assumption, ask an
+  Item-anchored clarification, or return a typed capability failure.
+- **Must not:** be silently reinterpreted by Planner and written back as Event fact.
+- **Recorded in:** the capability-gap registry for review, regression fixtures, and future Updater
+  work.
+
+If an Interpreter fallback is needed, it remains owned by Interpreter:
+
+```text
+Item -> Interpreter -> Interpreter fallback -> Event / Residue -> Planner
+```
+
+The forbidden alternative is `Residue -> Planner as a second Interpreter -> rewritten Event`.
+
+#### Directive library
+
+- **Represents:** a non-timeline conversational request such as query, explanation, replan request,
+  information, or unknown input.
+- **Produces:** a first-class Chronos Log response with optional clickable Timeline references.
+- **Must not:** create an executable Operation solely to display a reply.
+
+#### Estimator
+
+- **Reads:** Monitor evidence, committed Timeline, Forecast, Profile, freshness, and confidence.
+- **Produces:** State.
+- **Owns:** interpretation of the user's changing condition, not interpretation of Prompt language.
+- **Must not:** create Events, Plans, or Operations.
+
+#### State library
+
+- **Contains:** the smallest current user/schedule facts Planner needs, each with confidence,
+  freshness, and source where relevant.
+- **Examples:** current time, activity, focus/load estimate, interruptibility, active task,
+  availability, and forecast risk.
+- **Must not:** merge raw Monitor streams with Prompt semantics or pretend uncertain estimates are
+  user-confirmed facts.
+
+#### Planner
+
+- **Reads:** Events, Directives that require planning, State, and a bounded Schedule view. It
+  normally does not read Prompt.
+- **Produces:** exactly one Plan snapshot containing resolved changes, concrete timing, conflicts,
+  assumptions, explanations, horizon, and source Event references.
+- **Owns:** constraint resolution, slot choice, prospective/historical horizon, relations, fixed
+  constraints, planning objectives, and centralized post-Parser clarification decisions.
+- **May inspect Residue only to choose:** explicit assumption, clarification, or typed failure.
+- **Must not:** rewrite Event facts, redo general language interpretation, emit Runtime-specific
+  payloads, or accept Operations as input.
+
+#### Plan library
+
+- **Is:** the single resolved planning truth between Events and Operations.
+- **Contains:** concrete task/reminder drafts or changes, resolved timing and relations, conflicts,
+  assumptions, explanation, planning horizon, source Event ids, and version/concurrency basis.
+- **Feeds:** Proposal text, Timeline Projection, Lowerer, and Gate metadata.
+- **Must not:** coexist with a proposal-only execution payload containing different changes.
+
+#### Lowerer
+
+- **Reads:** Plan only.
+- **Produces:** the registered finite Operations union.
+- **Owns:** deterministic conversion from resolved changes to Runtime primitives.
+- **Must not:** read Prompt, call a model, choose slots, ask clarification, or raise Operations back
+  into Events/Plan.
+
+#### Operations library
+
+- **Is:** the only executable representation accepted by Runtime.
+- **Contains:** finite, registered, strictly validated primitives such as create/update/delete of
+  Task or Reminder.
+- **Must not:** contain symbolic time, unresolved semantics, model-invented operation names, or
+  proposal-specific hidden payloads.
+
+#### Gate
+
+- **Reads:** Plan/Operation risk metadata, ambiguity, impact, reversibility, concurrency state, and
+  Autonomy policy.
+- **Produces:** propose, direct execute, or reject/clarify decision.
+- **Must not:** change the Plan or create alternate Operations.
+
+#### Runtime
+
+- **Reads:** an approved AgentOperation and Operations only.
+- **Owns:** final validation, prospective-past guard, optimistic concurrency, transaction, domain
+  writes, rollback, Log lifecycle entries, and Undo snapshot.
+- **Must not:** call Planner, understand Prompt/Event, reconstruct Tasks for replanning, or execute a
+  legacy Proposal payload instead of Operations.
+
+#### AgentOperation and views
+
+- **AgentOperation:** lifecycle envelope for the current Items/Events/Plan/Operations snapshot,
+  clarification state, version, risk, and status. It does not introduce another semantic model.
+- **Proposal:** `AgentOperation.state = proposed` plus a confirmation view of the same Plan and
+  Operations.
+- **Projection:** spatial view derived from that same Plan/Operations; it remains visible when Log
+  is folded.
+- **Log:** append-only human-readable lifecycle and Directive replies, with references back to the
+  same objects.
+- Proposal, Projection, and Log must never become independent sources of executable truth.
 
 ### Ready to implement next
 
