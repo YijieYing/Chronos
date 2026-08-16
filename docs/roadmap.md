@@ -5,6 +5,184 @@ not part of the current implementation. Each item should state its current limit
 outcome, and delivery checkpoints. Completed work should move to release notes or architecture
 documentation instead of remaining here.
 
+## Agent understanding and planning pipeline
+
+### Agreed architecture
+
+Chronos will migrate to one forward-only pipeline. Each stage consumes primarily the structured
+output of the previous stage and must not repeat that stage's responsibility:
+
+```text
+Prompt
+  -> Parser
+  -> Items
+  -> Interpreter
+  -> Events
+  -> Planner + State
+  -> Plan
+  -> Lowerer
+  -> Operations
+  -> Gate
+  -> Runtime
+  -> Schedule / Reminder domain
+
+Monitor + Timeline + Forecast + Profile
+  -> Estimator
+  -> State
+```
+
+Proposal, Projection, and Log are lifecycle views around this pipeline. They must not own a second
+semantic model, planning payload, or executable truth. Runtime executes only the finite Operations
+produced by Lowerer; it does not interpret language, call Planner, or reconstruct planning objects
+from lower-level operations.
+
+### Layer boundaries
+
+- **Parser** only segments the original Prompt. It does not infer kind, request, time, duration, or
+  title. It asks only when the segmentation boundary itself is ambiguous.
+- **Item** is an exact contiguous source fragment with `id`, `promptId`, `span`, and `text`. Its text
+  must equal the corresponding Prompt slice.
+- **Interpreter** understands each Item. It may combine multiple Items into one Event or emit
+  multiple Events from one Item. It owns linguistic interpretation; Planner must not normally
+  reinterpret the original Prompt.
+- **Event** is the complete semantic description understood from one or more Items. It retains
+  evidence and provenance rather than model-generated replacement wording.
+- **Estimator** interprets changing user information from Monitor, Timeline, Forecast, and Profile
+  and produces State independently of Prompt interpretation.
+- **Planner** consumes Events, State, and the necessary Schedule view. It resolves constraints,
+  raises all post-Parser clarification centrally, records assumptions, and produces one Plan.
+- **Lowerer** deterministically converts Plan into the finite executable Operations union.
+- **Gate** decides proposal versus direct execution from ambiguity, impact, reversibility, risk,
+  and the selected autonomy level.
+- **Runtime** validates and transactionally executes Operations, writes Log entries, and supports
+  rollback and Undo.
+
+### Item, Event, and request decisions
+
+An Item contains no inferred action or timing fields. An Event contains source-backed `content[]`,
+one semantic `request`, `time`, optional `duration`, references, relations, gaps, residue, and
+provenance.
+
+For a concrete timeline Event, the semantic request vocabulary is limited to:
+
+- `add`
+- `edit`, with a target and the Event fields intended to change
+- `delete`, with a target
+
+These are user-level requests, not Runtime operations. Lowerer remains responsible for translating
+the Plan into executable primitives. Inputs that ask Chronos to answer rather than mutate a
+timeline object are Directives; their responses appear as first-class Chronos Log entries and may
+carry clickable Timeline references, but do not create Operations merely to display a reply.
+
+Time must not use `null` for every non-concrete case. The initial vocabulary distinguishes:
+
+- no time was expressed
+- symbolic `morning`, `afternoon`, or `evening`
+- a concrete point or range
+- flexible scheduling such as “when available”
+- relative timing linked to a Relation, such as “after A”
+- expressed but unresolved timing
+
+Approximation is precision attached to a point, range, or symbolic time rather than one catch-all
+time type.
+
+If the user says that B is included with A, Interpreter combines their source fragments into one
+Event, keeps the already established duration, and derives display text deterministically from the
+combined content. This does not require shared-duration types, `same_block`, or a merge Runtime
+operation. A relation is retained only when the events must remain independently identifiable.
+
+### Clarification and residue
+
+Parser clarification anchors the ambiguous source span because Items do not yet exist. Every
+clarification after Parser must anchor a concrete Item and may additionally reference an Event or
+related Items. Answers return to the stage that owns the uncertainty and produce a complete new
+snapshot; Planner must not patch Event semantics itself.
+
+Interpreter must respond to every Item. When it cannot safely express part of the language, it
+emits typed Residue with the original span and reason instead of inventing a value or failing the
+whole request. Planner may inspect Residue only to decide among:
+
+1. continue with an explicit Plan assumption;
+2. ask an Item-anchored clarification;
+3. return a typed capability failure.
+
+Planner must not silently turn Residue into asserted Event semantics. Assumptions belong to Plan;
+facts inferred from Prompt or clarification belong to Event. Provenance records whether each fact
+or assumption came from Prompt, clarification, selection, Profile, Timeline, Monitor, or planning.
+
+Every Residue occurrence must be persisted in a capability-gap registry with its sanitized source
+example, reason, affected Item/Event, handling outcome, and Interpreter version. During early
+development this registry will be reviewed regularly to expand Interpreter coverage and convert
+real examples into regression tests, steadily reducing how often Planner sees Residue.
+
+### Ready to implement next
+
+These changes have agreed semantics and can begin without another product-design round:
+
+1. Add characterization tests for the current Prompt-to-Runtime path and architecture-boundary
+   tests that forbid lower-to-higher reconstruction.
+2. Define the minimal Parser, Item, Event, Request, Time, Gap, Residue, Provenance, Directive, and
+   State contracts using the canonical short names above; identify the legacy types each replaces.
+3. Implement exact-span Parser output and tests proving Parser does not infer Event fields.
+4. Implement the first Interpreter slice for task/reminder `add`, `edit`, and `delete`, symbolic
+   periods, concrete ranges, flexible/relative/absent/unresolved time, and Item-anchored gaps.
+5. Persist Residue capability gaps and add a review/export command plus regression fixtures.
+6. Route clarification answers back through Interpreter to produce full Event snapshots; remove
+   field-filling behavior from the migrated slice.
+7. Establish one Plan output and one deterministic Lowerer path for the first vertical case:
+   “下午安排半小时日语”. Runtime must receive only Operations.
+8. Migrate “A 和 B 算在一起，总共一小时” through combined Event content, without a merge
+   operation or a second proposal payload.
+9. Render Directive answers in Chronos Log, including clickable object and time-range references.
+10. For every migration phase, report types added, replaced, and deleted, plus any explicit compat
+    path and its removal checkpoint.
+
+### Later rounds
+
+These require more design or depend on the first vertical slices:
+
+1. Settle the detailed Event dimensions beyond the initial request/time vocabulary, including
+   recurrence, priority, rigidity, cognitive properties, long-term planning, and reminder policy.
+2. Expand Estimator and State contracts for Monitor evidence, current activity, predicted cognitive
+   load, uncertainty, and freshness without exposing unnecessary raw data to Planner.
+3. Support broader edit and replanning cases, multiple related Events, historical recording,
+   deadlines, preferences, and constraint-aware changes while keeping the same forward-only path.
+4. Move Proposal, Projection, and Log completely onto Event/Plan/Operations references, then remove
+   legacy proposal execution payloads, task reconstruction, and duplicated state.
+5. Add capability dashboards and quality metrics for Residue rate, clarification rate, unsupported
+   concepts, false assumptions, and coverage by Interpreter version.
+
+### Long-term automation
+
+Introduce an **Updater** only after the Residue registry and manual improvement loop are stable.
+Updater will cluster recurring capability gaps, propose Event vocabulary or Interpreter changes,
+generate candidate fixtures, and present a reviewable patch. It must not modify production schemas,
+prompts, or Interpreter behavior autonomously. Human approval, versioning, evaluation, and rollback
+remain required.
+
+Updater is an offline development loop, not another stage in the request-time pipeline:
+
+```text
+Residue registry
+  -> Updater
+  -> reviewed Interpreter change
+  -> regression suite
+  -> versioned release
+```
+
+### Architecture invariants
+
+- Raw Prompt is visible to Parser; Item text is visible to Interpreter. Planner normally receives
+  Events rather than the full Prompt.
+- Interpreter owns language meaning; Planner owns scheduling decisions.
+- Event facts and Plan assumptions are never stored as the same truth.
+- Data moves only toward more concrete representations: Items -> Events -> Plan -> Operations.
+- Operations are never reconstructed into Events or Planner input on the primary path.
+- Proposal, Projection, and Log reference the same Event, Plan, and Operations owned by an
+  AgentOperation.
+- An unsupported phrase becomes Residue, clarification, or a typed failure—not an invented
+  executable operation.
+
 ## Context-aware Reminder delivery and object conversion
 
 ### Current limitation
