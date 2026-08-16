@@ -276,6 +276,35 @@ These changes have agreed semantics and can begin without another product-design
 10. For every migration phase, report types added, replaced, and deleted, plus any explicit compat
     path and its removal checkpoint.
 
+### Migration status (2026-08-16)
+
+Completed on the canonical path:
+
+- Contracts for Parser, Items, Events, Gap, Residue, Directive, State, Plan, Lowerer, Operations,
+  Runtime, and persisted AgentOperation snapshots.
+- Exact-span parsing, versioned Interpreter snapshots, full semantic clarification continuation,
+  and persistent Residue registry.
+- Task creation for symbolic periods, combined Item content (`A · B`) with one total duration, and
+  point/window/context-aware Reminder creation.
+- `Plan -> Operations -> Runtime` task/reminder execution, prospective NOW guard, transactions,
+  rollback, undo, Log events, and Proposal/Projection views derived from canonical state.
+- Existing `/api/v1/proposals` create/clarify/accept entry points switch to the canonical Flow when
+  a configured language model is available. Directive replies bypass Planner and appear in Log.
+- Schedule-domain `Plan` was renamed `Agenda`; Agent `Plan` is now the only planning-result name.
+- ProposalSnapshot no longer owns Operations. Runtime's former ProposalService execution methods
+  are isolated as `execute_legacy` and `revert_legacy`.
+
+Still to migrate before deleting compatibility code:
+
+- Semantic and planning support for edit/delete, recurrence, selected object/range context,
+  relative time, historical recording, and broad replanning.
+- Gate/autonomy execution in canonical Flow; current migrated requests remain proposals.
+- Canonical stale/recompile behavior and Plan-based projection for non-create changes.
+- Removal of `LLMChronosCompiler`, `AgentInterpretation`, proposal Task reconstruction,
+  ScheduleCommandBatch Agent routing, and ProposalService execution duties after parity tests pass.
+- Rename legacy SQLite/wire `plans` and `plan_id` only through an explicit storage/API migration;
+  they currently refer to Schedule Agenda compatibility data.
+
 ### Later rounds
 
 These require more design or depend on the first vertical slices:

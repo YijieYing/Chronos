@@ -1,8 +1,18 @@
 # Chronos architecture
 
-The staged migration from the current proposal flow to the Compiler / Operation / Runtime foundation
-is tracked in [agent-interaction-audit.md](agent-interaction-audit.md). That audit distinguishes
-existing behavior from target contracts and is the entry point for each implementation phase.
+The Agent migration and remaining compatibility deletion are tracked in
+[roadmap.md](roadmap.md). The canonical request path is now forward-only:
+
+```text
+Prompt -> Parser -> Items -> Interpreter -> Events -> Planner -> Plan
+       -> Lowerer -> Operations -> Runtime -> Schedule / Reminder
+```
+
+`AgentOperation` persists the current semantic `Snapshot`, resolved `Plan`, finite Operations, and
+lifecycle state. Proposal and Projection are views of those objects. Proposal no longer stores a
+second executable payload, and canonical Runtime never calls Planner or ProposalService. The old
+proposal-shaped execution path remains only behind methods explicitly suffixed `legacy` while
+unmigrated edit/delete/recurrence cases are moved.
 
 Chronos starts as a modular monolith with three independent domain boundaries. This keeps local
 deployment simple without allowing monitoring, scheduling, and automatic adaptation to collapse
@@ -37,17 +47,13 @@ and explicit schedule commands. It may publish events such as:
 Schedule can operate without Monitor. It does not infer actual behavior and does not automatically
 react to work-state updates.
 
-The HTTP timeline is a projection of Schedule tasks and activated plan blocks, not a separate
+The HTTP timeline is a projection of Schedule tasks and activated agenda blocks, not a separate
 write model. The former `timeline_tasks` storage is a migration source only. Recurring occurrences
 are projected by the backend planner over a bounded horizon and retain their series identity for
-editing. User edits and Agent requests both become Schedule commands; Agent commands first produce
-a persisted draft proposal and require explicit acceptance before changing tasks or plans.
-
-Natural-language parsing is an input adapter behind `ScheduleCommandParser`. Semantic creation
-requests pass through a source-grounded `AgentInterpretation`, clarification when required, a typed
-`ScheduleCommandBatch`, 14-day planner preview, and atomic confirmation. Update, delete, and query requests
-remain typed single commands. This keeps model interpretation separate from planner rules,
-persistence, stale-plan checks, and confirmation policy.
+editing. User edits still use Schedule commands. Migrated Agent task/reminder creation instead uses
+the canonical Agent pipeline above and reaches Schedule only through Runtime Operations. The former
+`ScheduleCommandParser -> AgentInterpretation -> ProposalService` route is compatibility code, not
+an allowed dependency for new Agent capabilities.
 
 Daily and weekly recurrence may include an inclusive `until` date. Interpretation provenance is
 field-level and supports multiple exact source fragments, allowing one grammatical modifier to
