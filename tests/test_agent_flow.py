@@ -56,6 +56,31 @@ class SequenceModel:
 
 
 class FlowTest(TestCase):
+    def test_directive_completes_without_planner_or_operations(self) -> None:
+        with TemporaryDirectory() as temporary:
+            database = Path(temporary) / "chronos.sqlite3"
+            schedule = ScheduleService(SQLiteScheduleRepository(database))
+            store = OperationStore(SQLiteAgentOperationRepository(database))
+            prompt = "解释一下现在的安排"
+
+            class DirectiveModel(Model):
+                def generate(self, _system: str, encoded: str) -> str:
+                    item_id = json.loads(encoded)["items"][0]["id"]
+                    return json.dumps({"meanings": [{
+                        "type": "directive", "item_ids": [item_id], "kind": "explain",
+                        "content": [{"item_id": item_id, "start": 0, "end": len(prompt)}],
+                        "response": "当前时间轴没有已安排任务。",
+                    }]}, ensure_ascii=False)
+
+            operation = Flow(Interpreter(DirectiveModel("")), store, schedule).submit(
+                prompt, int(datetime.now(UTC).timestamp() * 1000)
+            )
+
+            self.assertEqual(operation.state, OperationState.COMPLETED)
+            self.assertEqual(operation.compiled_operations, ())
+            self.assertIsNone(operation.plan)
+            self.assertEqual(operation.intent.summary, "当前时间轴没有已安排任务。")
+
     def test_api_clarification_rebuilds_snapshot_then_proposes(self) -> None:
         with TemporaryDirectory() as temporary:
             database = Path(temporary) / "chronos.sqlite3"

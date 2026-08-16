@@ -77,6 +77,22 @@ class InterpreterTest(TestCase):
         self.assertEqual(residue.text, item.text)
         self.assertEqual(residue.interpreter_version, "events-test")
 
+    def test_directive_carries_a_loggable_reply_without_operations(self) -> None:
+        prompt = "解释一下现在的安排"
+        item = Parser().parse("prompt-directive", prompt).items[0]
+        response = json.dumps({"meanings": [{
+            "type": "directive",
+            "item_ids": [item.id],
+            "kind": "explain",
+            "content": [{"item_id": item.id, "start": 0, "end": len(prompt)}],
+            "response": "今天下午有一项日语安排。",
+        }]}, ensure_ascii=False)
+
+        snapshot = Interpreter(StaticModel(response)).interpret((item,))
+
+        self.assertEqual(snapshot.events, ())
+        self.assertEqual(snapshot.directives[0].response, "今天下午有一项日语安排。")
+
     def test_one_bad_meaning_does_not_discard_other_items(self) -> None:
         prompt = "安排A安排B"
         parsed = Parser(lambda _text: (

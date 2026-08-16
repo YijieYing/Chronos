@@ -157,6 +157,7 @@ def _prompt(
                     "content": [{"item_id": "item id", "start": 0, "end": 1}],
                     "references": [],
                     "residue": [],
+                    "response": "concise user-facing Chronos reply",
                 },
             },
             "items": [
@@ -252,6 +253,7 @@ def _directive(
             _residue(_dict(residue, "residue"), {item.id: item}, interpreter_version)
             for residue in _list(value.get("residue", []), "residue")
         ),
+        response=str(value["response"]) if value.get("response") else None,
     )
 
 
@@ -271,6 +273,7 @@ def _fallback(snapshot_id: str, index: int, item: Item, version: str) -> Directi
                 "Interpreter could not produce a valid semantic meaning",
             ),
         ),
+        response=None,
     )
 
 

@@ -352,12 +352,15 @@ class Directive:
     content: tuple[Content, ...]
     references: tuple[Reference, ...] = ()
     residue: tuple[Residue, ...] = ()
+    response: str | None = None
 
     def __post_init__(self) -> None:
         if not self.id or not self.item_id or not self.content:
             raise ValueError("directive id, item, and content are required")
         if any(item.item_id != self.item_id for item in self.content):
             raise ValueError("directive content must come from its item")
+        if self.type != DirectiveKind.UNKNOWN and not (self.response or "").strip():
+            raise ValueError("understood directive requires a user-facing response")
 
 
 @dataclass(frozen=True, slots=True)

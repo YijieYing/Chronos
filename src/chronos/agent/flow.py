@@ -109,9 +109,14 @@ class Flow:
         questions = _questions(snapshot)
         plan: Plan | None = None
         executable: tuple[TimelineOperation, ...] = ()
-        state = OperationState.AWAITING_CLARIFICATION if questions else OperationState.PROPOSED
+        directive = snapshot.directives[0] if snapshot.directives and not snapshot.events else None
+        state = (
+            OperationState.COMPLETED if directive and directive.response
+            else OperationState.AWAITING_CLARIFICATION if questions
+            else OperationState.PROPOSED
+        )
         failure: str | None = None
-        if not questions:
+        if not questions and directive is None:
             try:
                 plan = self._planner.plan(
                     snapshot,
@@ -125,6 +130,7 @@ class Flow:
         operation_id = operation_id or str(uuid4())
         summary = (
             plan.explanation if plan is not None
+            else directive.response if directive and directive.response
             else " ".join(item.question for item in questions)
             if questions else failure or "Chronos 无法规划此请求。"
         )
@@ -175,6 +181,7 @@ class Flow:
             OperationState.AWAITING_CLARIFICATION: LogEventType.CLARIFICATION_REQUESTED,
             OperationState.PROPOSED: LogEventType.PROPOSAL_CREATED,
             OperationState.FAILED: LogEventType.OPERATION_FAILED,
+            OperationState.COMPLETED: LogEventType.AGENT_MESSAGE,
         }[operation.state]
         self._log.append(event, operation.intent.summary, operation_id=operation.id)
 

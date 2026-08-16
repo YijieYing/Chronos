@@ -524,6 +524,7 @@ def _directive_from_dict(value: dict[str, object]) -> Directive:
             _residue_from_dict(_dict(item, "residue"))
             for item in _list(value.get("residue", []), "residue")
         ),
+        str(value["response"]) if value.get("response") else None,
     )
 
 
