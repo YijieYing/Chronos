@@ -6,6 +6,9 @@ from chronos.agent.meaning import (
     DurationKind,
     Event,
     Field,
+    Gap,
+    GapReason,
+    Item,
     Kind,
     Origin,
     Period,
@@ -17,6 +20,8 @@ from chronos.agent.meaning import (
     RequestKind,
     Residue,
     ResidueReason,
+    ResidueStatus,
+    Snapshot,
     Span,
     Time,
     TimeKind,
@@ -108,6 +113,58 @@ class MeaningTest(TestCase):
                         Span(2, 4),
                         "状态好",
                         ResidueReason.UNSUPPORTED,
+                        "test-v1",
                     ),
                 ),
             )
+
+    def test_gap_carries_semantic_candidates_without_becoming_field_completion(self) -> None:
+        gap = Gap(
+            item_id="item-1",
+            event_id="event-1",
+            field="relations[0].target",
+            question="你指的是哪一个 Research？",
+            reason=GapReason.AMBIGUOUS,
+            candidates=("research-morning", "research-evening"),
+        )
+
+        self.assertEqual(gap.candidates, ("research-morning", "research-evening"))
+        with self.assertRaisesRegex(ValueError, "unique"):
+            Gap(
+                "item-1",
+                "time",
+                "哪一个？",
+                GapReason.AMBIGUOUS,
+                candidates=("same", "same"),
+            )
+
+    def test_residue_records_interpreter_version_and_handling_status(self) -> None:
+        residue = Residue(
+            item_id="item-1",
+            span=Span(0, 5),
+            text="脑子清醒时",
+            reason=ResidueReason.UNSUPPORTED,
+            interpreter_version="events-v1",
+            hint="state-dependent timing",
+        )
+
+        self.assertEqual(residue.status, ResidueStatus.OPEN)
+        self.assertEqual(residue.interpreter_version, "events-v1")
+
+    def test_snapshot_is_complete_and_represents_every_item(self) -> None:
+        item = Item("item-1", "prompt-1", Span(0, 2), "日语")
+        event = Event(
+            id="event-1",
+            item_ids=(item.id,),
+            content=(Content(item.id, item.span, item.text),),
+            kind=Kind.TASK,
+            request=Request(RequestKind.ADD),
+            time=Time(TimeKind.PERIOD, period=Period.AFTERNOON),
+            duration=Duration(DurationKind.EXACT, minutes=30),
+        )
+
+        snapshot = Snapshot("snapshot-1", "prompt-1", 1, (item,), (event,))
+
+        self.assertEqual(snapshot.events, (event,))
+        with self.assertRaisesRegex(ValueError, "every item"):
+            Snapshot("snapshot-2", "prompt-1", 1, (item,), ())

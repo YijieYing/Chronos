@@ -239,10 +239,15 @@ class Gap:
     question: str
     reason: GapReason
     event_id: str | None = None
+    candidates: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.item_id or not self.field or not self.question.strip():
             raise ValueError("gap requires an item, field, and question")
+        if any(not item.strip() for item in self.candidates):
+            raise ValueError("gap candidates cannot be blank")
+        if len(set(self.candidates)) != len(self.candidates):
+            raise ValueError("gap candidates must be unique")
 
 
 class ResidueReason(StrEnum):
@@ -252,17 +257,27 @@ class ResidueReason(StrEnum):
     LOW_CONFIDENCE = "low_confidence"
 
 
+class ResidueStatus(StrEnum):
+    OPEN = "open"
+    ASSUMED = "assumed"
+    CLARIFIED = "clarified"
+    FAILED = "failed"
+    RESOLVED = "resolved"
+
+
 @dataclass(frozen=True, slots=True)
 class Residue:
     item_id: str
     span: Span
     text: str
     reason: ResidueReason
+    interpreter_version: str
     hint: str | None = None
+    status: ResidueStatus = ResidueStatus.OPEN
 
     def __post_init__(self) -> None:
-        if not self.item_id or not self.text:
-            raise ValueError("residue requires an item and source text")
+        if not self.item_id or not self.text or not self.interpreter_version:
+            raise ValueError("residue requires an item, source text, and Interpreter version")
 
 
 class Origin(StrEnum):
@@ -347,5 +362,56 @@ class Directive:
 type Meaning = Event | Directive
 
 
+@dataclass(frozen=True, slots=True)
+class Answer:
+    id: str
+    item_id: str
+    question_id: str
+    text: str
+
+    def __post_init__(self) -> None:
+        if not self.id or not self.item_id or not self.question_id or not self.text.strip():
+            raise ValueError("answer id, item, question, and text are required")
+
+
+@dataclass(frozen=True, slots=True)
+class Snapshot:
+    id: str
+    prompt_id: str
+    version: int
+    items: tuple[Item, ...]
+    events: tuple[Event, ...]
+    directives: tuple[Directive, ...] = ()
+    answers: tuple[Answer, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.id or not self.prompt_id or self.version <= 0 or not self.items:
+            raise ValueError("snapshot id, prompt id, positive version, and items are required")
+        item_ids = {item.id for item in self.items}
+        if len(item_ids) != len(self.items):
+            raise ValueError("snapshot item ids must be unique")
+        if any(item.prompt_id != self.prompt_id for item in self.items):
+            raise ValueError("snapshot items must belong to its prompt")
+        covered = {
+            item_id
+            for event in self.events
+            for item_id in event.item_ids
+        } | {directive.item_id for directive in self.directives}
+        if covered != item_ids:
+            raise ValueError("snapshot must represent every item exactly within its prompt")
+        if any(item.item_id not in item_ids for item in self.answers):
+            raise ValueError("snapshot answers must anchor one of its items")
+        event_ids = {event.id for event in self.events}
+        if len(event_ids) != len(self.events):
+            raise ValueError("snapshot event ids must be unique")
+        directive_ids = {directive.id for directive in self.directives}
+        if len(directive_ids) != len(self.directives):
+            raise ValueError("snapshot directive ids must be unique")
+
+
 class Interpreter(Protocol):
-    def interpret(self, items: tuple[Item, ...]) -> tuple[Meaning, ...]: ...
+    def interpret(
+        self,
+        items: tuple[Item, ...],
+        previous: Snapshot | None = None,
+    ) -> Snapshot: ...
