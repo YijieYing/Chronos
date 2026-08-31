@@ -1,4 +1,5 @@
 import {
+  type MouseEvent,
   type PointerEvent,
   type WheelEvent,
   useEffect,
@@ -201,7 +202,11 @@ export function WaveTimeline({
     setRangeDraft(null);
   }
 
-  function returnToNow() {
+  function returnToNow(event: MouseEvent<HTMLElement>) {
+    if (
+      !isTimelineFieldTarget(event.target)
+      || isInteractiveTimelineTarget(event.target)
+    ) return;
     if (clickTimer.current) window.clearTimeout(clickTimer.current);
     setCenterTime(now);
     setZoom(1);
@@ -218,6 +223,7 @@ export function WaveTimeline({
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={cancelGesture}
+      onDoubleClick={returnToNow}
     >
       <div className={styles.timelineReadout}>
         <span>CHRONOS / CONTINUOUS TEMPORAL FIELD</span>
@@ -227,7 +233,6 @@ export function WaveTimeline({
         className={styles.timelineSvg}
         width="100%"
         height={height}
-        onDoubleClick={returnToNow}
       >
         <defs>
           <linearGradient id="axis-fade" x1="0" x2="1">

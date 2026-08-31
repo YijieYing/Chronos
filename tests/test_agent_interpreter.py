@@ -64,16 +64,17 @@ class InterpreterTest(TestCase):
         self.assertEqual(event.duration.minutes, 30)
         self.assertIsNone(event.time.start)
 
-    def test_invalid_model_output_preserves_item_as_unknown_residue(self) -> None:
+    def test_invalid_model_output_becomes_clarification_event(self) -> None:
         item = Parser().parse("prompt-2", "等我脑子清醒时写报告").items[0]
 
         snapshot = Interpreter(StaticModel("not json"), version="events-test").interpret(
             (item,)
         )
 
-        self.assertEqual(snapshot.events, ())
-        self.assertEqual(snapshot.directives[0].type, DirectiveKind.UNKNOWN)
-        residue = snapshot.directives[0].residue[0]
+        self.assertEqual(snapshot.directives, ())
+        self.assertEqual(snapshot.events[0].kind.value, "unknown")
+        self.assertEqual(snapshot.events[0].gaps[0].field, "kind")
+        residue = snapshot.events[0].residue[0]
         self.assertEqual(residue.text, item.text)
         self.assertEqual(residue.interpreter_version, "events-test")
 
@@ -92,6 +93,94 @@ class InterpreterTest(TestCase):
 
         self.assertEqual(snapshot.events, ())
         self.assertEqual(snapshot.directives[0].response, "今天下午有一项日语安排。")
+
+    def test_permissive_task_output_normalizes_invalid_fields_into_gaps(self) -> None:
+        prompt = "帮我在晚上1点添加任务：找附近邮局"
+        item = Parser().parse("prompt-permissive", prompt).items[0]
+        response = json.dumps({"meanings": [{
+            "type": "event",
+            "item_ids": [item.id],
+            "content": [{"item_id": item.id, "start": 0, "end": len(prompt)}],
+            "kind": "task",
+            "title": "找附近邮局",
+            "request": {
+                "type": "add",
+                "target": {"type": "task", "id": None},
+                "fields": ["time"],
+            },
+            "time": {"type": "point"},
+            "duration": {"type": "none"},
+            "recurrence": {"frequency": None, "weekdays": [], "until": None},
+        }]}, ensure_ascii=False)
+
+        snapshot = Interpreter(StaticModel(response)).interpret(
+            (item,), now=1_788_181_089_593, timezone="Asia/Shanghai"
+        )
+
+        event = snapshot.events[0]
+        self.assertEqual(event.request.type, RequestKind.ADD)
+        self.assertIsNone(event.request.target)
+        self.assertEqual(event.content[0].text, "找附近邮局")
+        self.assertEqual(event.title, "找附近邮局")
+        self.assertEqual(event.time.type, TimeKind.UNRESOLVED)
+        self.assertEqual({gap.field for gap in event.gaps}, {"time", "duration"})
+        self.assertIsNone(event.recurrence)
+
+    def test_latest_answer_closes_its_field_even_when_model_reopens_it(self) -> None:
+        prompt = "提醒我晚上1点去找邮局"
+        item = Parser().parse("prompt-answer-overlay", prompt).items[0]
+        response = json.dumps({"meanings": [{
+            "type": "event", "item_ids": [item.id],
+            "content": [{"item_id": item.id, "start": 0, "end": len(prompt)}],
+            "kind": "reminder",
+            "time": {"type": "none"},
+            "gaps": [{
+                "item_id": item.id, "field": "duration",
+                "question": "这个任务要多久？", "reason": "missing",
+            }],
+        }]}, ensure_ascii=False)
+        interpreter = Interpreter(StaticModel(response))
+        now = 1_788_184_800_000
+        first = interpreter.interpret((item,), now=now, timezone="Asia/Shanghai")
+        answered = replace(first, answers=(
+            Answer("answer-time", item.id, f"{item.id}:time", "明天凌晨一点"),
+        ))
+
+        second = interpreter.interpret(
+            (item,), answered, now=now, timezone="Asia/Shanghai"
+        )
+
+        self.assertEqual(second.events[0].time.type, TimeKind.POINT)
+        self.assertEqual(second.events[0].request.type, RequestKind.ADD)
+        self.assertEqual(second.events[0].title, "找邮局")
+        self.assertIsNone(second.events[0].duration)
+        self.assertEqual(second.events[0].gaps, ())
+
+    def test_chinese_half_hour_source_and_answer_close_duration_gap(self) -> None:
+        prompt = "每天早上九点安排读半小时日语，先持续一周"
+        item = Parser().parse("prompt-half-hour", prompt).items[0]
+        response = json.dumps({"meanings": [{
+            "type": "event", "item_ids": [item.id],
+            "kind": "task", "title": "读日语", "request": {"type": "add"},
+            "time": {"type": "period", "period": "morning"},
+            "duration": {"type": "none"},
+            "gaps": [{
+                "item_id": item.id, "field": "duration",
+                "question": "请明确这个任务需要多长时间。", "reason": "missing",
+            }],
+        }]}, ensure_ascii=False)
+        interpreter = Interpreter(StaticModel(response))
+
+        first = interpreter.interpret((item,))
+        self.assertEqual(first.events[0].duration.minutes, 30)
+        self.assertEqual(first.events[0].gaps, ())
+
+        answered = replace(first, answers=(
+            Answer("answer-duration", item.id, f"{item.id}:duration", "半小时"),
+        ))
+        second = interpreter.interpret((item,), answered)
+        self.assertEqual(second.events[0].duration.minutes, 30)
+        self.assertEqual(second.events[0].gaps, ())
 
     def test_one_bad_meaning_does_not_discard_other_items(self) -> None:
         prompt = "安排A安排B"
@@ -123,10 +212,39 @@ class InterpreterTest(TestCase):
 
         snapshot = Interpreter(StaticModel(response)).interpret(parsed.items)
 
-        self.assertEqual(len(snapshot.events), 1)
+        self.assertEqual(len(snapshot.events), 2)
         self.assertEqual(snapshot.events[0].content[0].text, "A")
-        self.assertEqual(len(snapshot.directives), 1)
-        self.assertEqual(snapshot.directives[0].item_id, second.id)
+        self.assertEqual(snapshot.events[1].content[0].text, "安排B")
+        self.assertEqual(
+            {gap.field for gap in snapshot.events[1].gaps}, {"time", "duration"}
+        )
+
+    def test_one_incomplete_event_keeps_all_events_but_exposes_its_gap(self) -> None:
+        prompt = "下午写报告并整理资料"
+        item = Parser().parse("prompt-multi", prompt).items[0]
+        first = prompt.index("写报告")
+        second = prompt.index("整理资料")
+        response = json.dumps({"meanings": [
+            {
+                "type": "event", "item_ids": [item.id],
+                "content": [{"item_id": item.id, "start": first, "end": first + 3}],
+                "kind": "task", "request": {"type": "add"},
+                "time": {"type": "period", "period": "afternoon"},
+                "duration": {"type": "exact", "minutes": 30},
+            },
+            {
+                "type": "event", "item_ids": [item.id],
+                "content": [{"item_id": item.id, "start": second, "end": second + 4}],
+                "kind": "task", "request": {"type": "add"},
+                "time": {"type": "period", "period": "afternoon"},
+            },
+        ]}, ensure_ascii=False)
+
+        snapshot = Interpreter(StaticModel(response)).interpret((item,))
+
+        self.assertEqual([event.content[0].text for event in snapshot.events], ["写报告", "整理资料"])
+        self.assertEqual(snapshot.events[0].gaps, ())
+        self.assertEqual([gap.field for gap in snapshot.events[1].gaps], ["duration"])
 
     def test_clarification_rebuilds_the_same_snapshot_with_history(self) -> None:
         prompt = "安排日语"

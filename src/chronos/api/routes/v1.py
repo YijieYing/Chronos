@@ -1,24 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 
 from chronos.agent.autonomy import evaluate_autonomy, policy_for_level
 from chronos.agent.adjustment import AdjustmentCoordinator
-from chronos.agent.compiler import (
-    ChronosCompiler,
-    ClarificationCompilerResult,
-    CompilerResult,
-    LegacyProposalCompiler,
-)
 from chronos.agent.flow import Flow
+from chronos.agent.interpreter import Interpreter
 from chronos.agent.legacy_log import proposal_references
 from chronos.agent.log_service import ChronosLogService
+from chronos.agent.meaning import Reference, Time, TimeKind
 from chronos.agent.models import (
     AgentOperation,
     AutonomyPolicy,
-    ClarificationAnswer,
     InteractionContext,
     LogEventType,
     OperationScope,
@@ -27,8 +21,16 @@ from chronos.agent.models import (
     TimeRange,
     CreateReminderOperation,
     CreateTaskOperation,
+    DeleteReminderOperation,
+    DeleteTaskOperation,
+    MoveReminderOperation,
+    MoveTaskOperation,
+    ResizeTaskOperation,
+    UpdateReminderOperation,
+    UpdateTaskOperation,
 )
 from chronos.agent.projection_service import ProjectionService
+from chronos.agent.plan import ReminderDraft, Window
 from chronos.agent.runtime import ChronosRuntime
 from chronos.agent.serialization import log_entry_to_dict, projection_to_dict
 from chronos.agent.service import OperationStore
@@ -51,8 +53,9 @@ def _operation_view(
 
     proposed_tasks = []
     reminder_drafts = []
+    changes = []
     for executable in operation.compiled_operations:
-        if isinstance(executable, CreateTaskOperation):
+        if isinstance(executable, (CreateTaskOperation, UpdateTaskOperation)):
             proposed_tasks.append({
                 "task_id": executable.task_id,
                 "title": executable.task.title,
@@ -60,10 +63,33 @@ def _operation_view(
                 "preferred_start": datetime.fromtimestamp(
                     executable.task.start / 1000, UTC
                 ).isoformat(),
-                "recurrence": None,
+                "recurrence": (
+                    {
+                        "frequency": executable.task.recurrence.frequency,
+                        **(
+                            {"weekdays": list(executable.task.recurrence.weekdays)}
+                            if executable.task.recurrence.weekdays else {}
+                        ),
+                        **(
+                            {"until": executable.task.recurrence.until}
+                            if executable.task.recurrence.until else {}
+                        ),
+                    }
+                    if executable.task.recurrence is not None else None
+                ),
                 "fixed": executable.task.fixed,
             })
-        elif isinstance(executable, CreateReminderOperation):
+            changes.append({
+                "operation": "create" if isinstance(executable, CreateTaskOperation) else "update",
+                "target_type": "task",
+                "target_id": executable.task_id,
+                "summary": (
+                    f"创建任务「{executable.task.title}」"
+                    if isinstance(executable, CreateTaskOperation)
+                    else f"更新任务「{executable.task.title}」"
+                ),
+            })
+        elif isinstance(executable, (CreateReminderOperation, UpdateReminderOperation)):
             reminder = executable.reminder
             trigger = (
                 {"type": "time", "at": reminder.at}
@@ -83,6 +109,45 @@ def _operation_view(
                 "source": "agent",
                 "created_at": operation.created_at.isoformat(),
             }})
+            changes.append({
+                "operation": (
+                    "create" if isinstance(executable, CreateReminderOperation) else "update"
+                ),
+                "target_type": "reminder",
+                "target_id": executable.reminder_id,
+                "summary": (
+                    f"创建提醒「{reminder.title}」"
+                    if isinstance(executable, CreateReminderOperation)
+                    else f"更新提醒「{reminder.title}」"
+                ),
+            })
+        elif isinstance(executable, MoveTaskOperation):
+            changes.append({
+                "operation": "move", "target_type": "task",
+                "target_id": executable.task_id,
+                "summary": f"移动任务至 {datetime.fromtimestamp(executable.start / 1000, UTC).isoformat()}",
+            })
+        elif isinstance(executable, ResizeTaskOperation):
+            changes.append({
+                "operation": "resize", "target_type": "task",
+                "target_id": executable.task_id,
+                "summary": f"调整任务时长为 {executable.duration_minutes} 分钟",
+            })
+        elif isinstance(executable, DeleteTaskOperation):
+            changes.append({
+                "operation": "delete", "target_type": "task",
+                "target_id": executable.task_id, "summary": "删除任务",
+            })
+        elif isinstance(executable, MoveReminderOperation):
+            changes.append({
+                "operation": "move", "target_type": "reminder",
+                "target_id": executable.reminder_id, "summary": "调整提醒时间",
+            })
+        elif isinstance(executable, DeleteReminderOperation):
+            changes.append({
+                "operation": "delete", "target_type": "reminder",
+                "target_id": executable.reminder_id, "summary": "删除提醒",
+            })
     mapped = {
         OperationState.AWAITING_CLARIFICATION: "needs_clarification",
         OperationState.PROPOSED: "pending",
@@ -95,12 +160,21 @@ def _operation_view(
         "proposal_id": operation.id,
         "status": status or mapped.get(operation.state, operation.state.value),
         "requires_confirmation": operation.state == OperationState.PROPOSED,
+        "read_only": False,
+        "source": "canonical",
         "request_text": operation.intent.source_text or "",
         "proposed_task": None,
         "proposed_tasks": proposed_tasks,
         "results": [],
-        "changes": [],
-        "conflicts": [],
+        "changes": changes,
+        "conflicts": [
+            {
+                "event_id": item.event_id,
+                "code": item.code,
+                "message": item.message,
+            }
+            for item in operation.plan.conflicts
+        ] if operation.plan else [],
         "explanation": [operation.intent.summary],
         "parser_mode": "semantic",
         "parser_warnings": [],
@@ -126,7 +200,7 @@ class V1Router:
         chronos_log: ChronosLogService | None = None,
         operation_store: OperationStore | None = None,
         projections: ProjectionService | None = None,
-        compiler: ChronosCompiler | None = None,
+        compiler: object | None = None,
         runtime: ChronosRuntime | None = None,
         adjustments: AdjustmentCoordinator | None = None,
         flow: Flow | None = None,
@@ -138,11 +212,25 @@ class V1Router:
         self._chronos_log = chronos_log
         self._operation_store = operation_store
         self._projections = projections
-        self._semantic_compiler = compiler
-        self._compiler = LegacyProposalCompiler()
         self._runtime = runtime
         self._adjustments = adjustments
-        self._flow = flow
+        self._flow = flow or (
+            Flow(
+                Interpreter(),
+                operation_store,
+                schedule,
+                chronos_log,
+                reminder_ids=(
+                    lambda: tuple(str(item["id"]) for item in reminders.list())
+                    if reminders is not None else None
+                ),
+                reminder_drafts=(
+                    lambda: _canonical_reminders(reminders)
+                    if reminders is not None else None
+                ),
+            )
+            if operation_store is not None else None
+        )
 
     def dispatch(
         self,
@@ -182,7 +270,7 @@ class V1Router:
         if method == "GET" and path == "/api/v1/timeline-projections":
             if self._projections is None:
                 return HTTPStatus.OK, success({"projections": []})
-            projections = self._projections.list_active(tuple(self._proposals.list()))
+            projections = self._projections.list_active()
             return HTTPStatus.OK, success(
                 {"projections": [projection_to_dict(item) for item in projections]}
             )
@@ -199,18 +287,19 @@ class V1Router:
         if self._chronos_log is not None and path == "/api/v1/chronos-log":
             if method == "GET":
                 entries = [log_entry_to_dict(item) for item in self._chronos_log.list()]
-                pending_ids = (
-                    {item.id for item in self._operation_store.pending()}
-                    if self._operation_store is not None
-                    else set()
-                )
-                pending_ids.update(
-                    str(item["proposal_id"])
-                    for item in self._proposals.list()
-                    if item.get("status") in {"pending", "needs_clarification"}
-                )
-                pending_operations = (
+                pending = (
                     [
+                        item for item in self._operation_store.pending()
+                        if item.snapshot is not None
+                        and item.state in {
+                            OperationState.AWAITING_CLARIFICATION,
+                            OperationState.PROPOSED,
+                        }
+                    ]
+                    if self._operation_store is not None
+                    else []
+                )
+                pending_operations = [
                         {
                             "id": item.id,
                             "state": item.state.value,
@@ -225,15 +314,12 @@ class V1Router:
                             ],
                             "created_at": item.created_at.isoformat(),
                         }
-                        for item in self._operation_store.pending()
+                        for item in pending
                     ]
-                    if self._operation_store is not None
-                    else []
-                )
                 return HTTPStatus.OK, success(
                     {
                         "entries": entries,
-                        "pending_count": len(pending_ids),
+                        "pending_count": len(pending),
                         "pending_operations": pending_operations,
                     }
                 )
@@ -368,7 +454,7 @@ class V1Router:
             )
             canonical_ids = {str(item["proposal_id"]) for item in canonical}
             legacy = [
-                item for item in self._proposals.list()
+                _legacy_view(item) for item in self._proposals.list()
                 if str(item["proposal_id"]) not in canonical_ids
             ]
             return HTTPStatus.OK, success({"proposals": [*canonical, *legacy]})
@@ -376,32 +462,13 @@ class V1Router:
             text = str(payload.get("text", ""))
             context = _interaction_context(payload.get("interaction_context"))
             if self._flow is not None:
-                operation = self._flow.submit(text, context.current_time)
-                return HTTPStatus.CREATED, success(_operation_view(operation))
-            compiled: CompilerResult | None = None
-            if self._semantic_compiler is not None:
-                compile_context = replace(
-                    context,
-                    user_input=text,
-                    timeline_context={
-                        "tasks": tuple(self._schedule.list_tasks()),
-                        "timezone": self._schedule.settings()["timezone"],
-                    },
+                selection = _semantic_selection(context.selection)
+                operation = self._flow.submit(
+                    text, context.current_time, selection=selection
                 )
-                compiled = self._semantic_compiler.compile(compile_context)
-                proposal = self._proposals.create_from_compiler(
-                    compiled,
-                    datetime.fromtimestamp(context.current_time / 1000, UTC),
-                )
-            else:
-                proposal = self._proposals.create(text)
-            proposal = self._proposals.attach_interaction_context(
-                str(proposal["proposal_id"]), _interaction_context_dict(context)
-            )
-            self._compile_proposal(proposal, text, context, compiled)
-            self._log_proposal_created(proposal, text)
-            proposal = self._apply_autonomy(proposal)
-            return HTTPStatus.CREATED, success(proposal)
+                proposal = self._apply_autonomy(_operation_view(operation))
+                return HTTPStatus.CREATED, success(proposal)
+            raise RuntimeError("canonical Flow is required for Agent writes")
         proposal_prefix = "/api/v1/proposals/"
         if path.startswith(proposal_prefix):
             suffix = path.removeprefix(proposal_prefix)
@@ -413,7 +480,7 @@ class V1Router:
                             return HTTPStatus.OK, success(_operation_view(operation))
                     except KeyError:
                         pass
-                return HTTPStatus.OK, success(self._proposals.get(suffix))
+                return HTTPStatus.OK, success(_legacy_view(self._proposals.get(suffix)))
             if method == "POST" and suffix.endswith("/accept"):
                 proposal_id = suffix.removesuffix("/accept")
                 changed_scope = (
@@ -434,11 +501,9 @@ class V1Router:
                             self._operation_store.get(proposal_id), status="accepted"
                         )
                     else:
-                        proposal, transaction = self._runtime.execute_legacy(proposal_id)
+                        raise ValueError("legacy proposals are read-only")
                 else:
-                    proposal = self._proposals.accept(proposal_id)
-                    transaction = None
-                    self._complete_operation(proposal_id)
+                    raise RuntimeError("Runtime is required for Agent writes")
                 if changed_scope is not None:
                     self._timeline_changed(
                         changed_scope, exclude_operation_id=proposal_id
@@ -459,8 +524,7 @@ class V1Router:
                     )
                     proposal = _operation_view(rejected)
                 else:
-                    proposal = self._proposals.reject(proposal_id)
-                    self._reject_operation(proposal_id)
+                    raise ValueError("legacy proposals are read-only")
                 self._log_proposal_event(
                     proposal, LogEventType.OPERATION_REJECTED, "已拒绝时间轴提案。"
                 )
@@ -477,11 +541,7 @@ class V1Router:
                     self._runtime.revert(proposal_id)
                     proposal = _operation_view(current, status="restored")
                 else:
-                    proposal = (
-                        self._runtime.revert_legacy(proposal_id)
-                        if self._runtime is not None
-                        else self._proposals.restore(proposal_id)
-                    )
+                    raise ValueError("legacy proposals are read-only")
                 if changed_scope is not None:
                     self._timeline_changed(
                         changed_scope, exclude_operation_id=proposal_id
@@ -508,85 +568,20 @@ class V1Router:
             answer = str(payload.get("answer", "")).strip()
             field = str(payload.get("field", "")).strip()
             context = _interaction_context(payload.get("interaction_context"))
-            if not answer or ":" not in field:
+            selection = _semantic_selection(context.selection)
+            if (not answer and not isinstance(selection, Time)) or ":" not in field:
                 raise ValueError("semantic clarification requires an anchored answer")
             item_id = field.split(":", 1)[0]
             refreshed = self._flow.clarify(
                 operation_id,
                 item_id=item_id,
                 question_id=field,
-                answer=answer,
+                answer=answer or "使用选中的时间范围",
                 now=context.current_time,
+                selection=selection,
             )
-            return _operation_view(refreshed)
-        if self._semantic_compiler is None:
-            raise RuntimeError("semantic Compiler and OperationStore are required")
-        if current.state != OperationState.AWAITING_CLARIFICATION:
-            raise ValueError("operation is not awaiting clarification")
-        answer = str(payload.get("answer", "")).strip()
-        field = str(payload.get("field", "")).strip()
-        question = str(payload.get("question", "")).strip()
-        context = _interaction_context(payload.get("interaction_context"))
-        if not answer and context.selection is None:
-            raise ValueError("clarification answer or Timeline selection is required")
-        if not field or not question:
-            raise ValueError("clarification field and question are required")
-        unresolved = next(
-            (item for item in current.unresolved_questions if item.field == field),
-            None,
-        )
-        if unresolved is None:
-            raise ValueError("clarification field is stale or already resolved")
-        if unresolved.question != question:
-            raise ValueError("clarification question is stale")
-        answer_text = answer or "使用当前选择的时间范围"
-        source = current.intent.source_text or ""
-        compile_context = replace(
-            context,
-            user_input=source,
-            clarification_answer=ClarificationAnswer(
-                field=field,
-                question=question,
-                answer=answer_text,
-            ),
-            timeline_context={
-                "tasks": tuple(self._schedule.list_tasks()),
-                "timezone": self._schedule.settings()["timezone"],
-                "operation_id": current.id,
-                "operation_version": current.version + 1,
-                "operation_created_at": current.created_at,
-            },
-        )
-        compiled = self._semantic_compiler.compile(compile_context)
-        proposal = self._proposals.create_from_compiler(
-            compiled, datetime.fromtimestamp(context.current_time / 1000, UTC)
-        )
-        proposal = self._proposals.attach_interaction_context(
-            operation_id, _interaction_context_dict(context)
-        )
-        refreshed = compiled.operation
-        self._operation_store.save_snapshot(refreshed, expected_version=current.version)
-        if self._chronos_log is not None:
-            self._chronos_log.append(
-                LogEventType.CLARIFICATION_ANSWERED,
-                answer_text,
-                operation_id=operation_id,
-                references=(context.selection,) if context.selection else (),
-                metadata={"field": field, "question": question},
-            )
-            event_type = (
-                LogEventType.CLARIFICATION_REQUESTED
-                if isinstance(compiled, ClarificationCompilerResult)
-                else LogEventType.PROPOSAL_UPDATED
-            )
-            self._chronos_log.append(
-                event_type,
-                compiled.message,
-                operation_id=operation_id,
-                references=compiled.operation.references,
-                metadata={"operation_version": refreshed.version},
-            )
-        return proposal
+            return self._apply_autonomy(_operation_view(refreshed))
+        raise ValueError("legacy operations are read-only")
 
     def _timeline_changed(
         self, scope: OperationScope, *, exclude_operation_id: str | None = None
@@ -599,107 +594,14 @@ class V1Router:
             scope, exclude_operation_id=exclude_operation_id
         )
         for operation in stale:
-            self._proposals.mark_stale(operation.id)
             if self._chronos_log is not None:
                 self._chronos_log.append(
                     LogEventType.OPERATION_STALE,
-                    "相关时间轴已改变，旧提案已失效，正在重新编译。",
+                    "相关时间轴已改变，提案已失效，请重新提交请求。",
                     operation_id=operation.id,
                     references=operation.references,
                     metadata={"operation_state": "stale"},
                 )
-            try:
-                self._recompile_stale(operation)
-            except Exception as error:
-                failed = self._operation_store.transition(
-                    operation.id,
-                    OperationState.FAILED,
-                    expected_version=operation.version,
-                    failure_reason=str(error),
-                )
-                if self._chronos_log is not None:
-                    self._chronos_log.append(
-                        LogEventType.OPERATION_FAILED,
-                        "时间轴修改已保存，但相关提案重新编译失败。",
-                        operation_id=failed.id,
-                        references=failed.references,
-                        metadata={"failure_reason": str(error)},
-                    )
-
-    def _recompile_stale(self, operation) -> None:
-        if self._semantic_compiler is None or self._operation_store is None:
-            return
-        proposal = self._proposals.get(operation.id)
-        context = _interaction_context(proposal.get("interaction_context"))
-        compiled = self._semantic_compiler.compile(replace(
-            context,
-            current_time=max(
-                context.current_time,
-                int(operation.updated_at.timestamp() * 1000) + 1,
-            ),
-            user_input=operation.intent.source_text,
-            timeline_context={
-                "tasks": tuple(self._schedule.list_tasks()),
-                "timezone": self._schedule.settings()["timezone"],
-                "operation_id": operation.id,
-                "operation_version": operation.version + 1,
-                "operation_created_at": operation.created_at,
-            },
-        ))
-        refreshed_proposal = self._proposals.create_from_compiler(compiled)
-        self._proposals.attach_interaction_context(
-            operation.id, _interaction_context_dict(context)
-        )
-        self._operation_store.save_snapshot(
-            compiled.operation, expected_version=operation.version
-        )
-        if self._chronos_log is not None:
-            self._chronos_log.append(
-                LogEventType.PROPOSAL_UPDATED,
-                compiled.message,
-                operation_id=operation.id,
-                references=compiled.operation.references,
-                metadata={
-                    "operation_version": compiled.operation.version,
-                    "proposal_status": refreshed_proposal["status"],
-                },
-            )
-
-    def _log_proposal_created(self, proposal: dict[str, object], text: str) -> None:
-        if self._chronos_log is None:
-            return
-        proposal_id = str(proposal["proposal_id"])
-        references = proposal_references(proposal)
-        self._chronos_log.append(
-            LogEventType.USER_PROMPT,
-            text,
-            operation_id=proposal_id,
-            references=references,
-        )
-        status = str(proposal["status"])
-        if status == "needs_clarification":
-            event_type = LogEventType.CLARIFICATION_REQUESTED
-        elif status == "pending":
-            event_type = LogEventType.PROPOSAL_CREATED
-        else:
-            event_type = LogEventType.AGENT_MESSAGE
-        if status == "needs_clarification":
-            clarifications = proposal.get("clarifications", [])
-            message = " ".join(
-                str(item.get("question", ""))
-                for item in clarifications
-                if isinstance(item, dict)
-            )
-        else:
-            explanation = proposal.get("explanation", [])
-            message = " ".join(str(item) for item in explanation)
-        self._chronos_log.append(
-            event_type,
-            message or "Chronos 已处理请求。",
-            operation_id=proposal_id,
-            references=references,
-            metadata={"proposal_status": status},
-        )
 
     def _apply_autonomy(self, proposal: dict[str, object]) -> dict[str, object]:
         if self._operation_store is None or proposal.get("status") != "pending":
@@ -710,11 +612,15 @@ class V1Router:
         if not decision.execute:
             return proposal
         if self._runtime is not None:
-            applied, transaction = self._runtime.execute_legacy(operation.id)
+            if operation.snapshot is not None:
+                transaction = self._runtime.execute(operation, operation.compiled_operations)
+                applied = _operation_view(
+                    self._operation_store.get(operation.id), status="accepted"
+                )
+            else:
+                return proposal
         else:
-            applied = self._proposals.accept(operation.id)
-            transaction = None
-            self._complete_operation(operation.id)
+            return proposal
         self._log_proposal_event(
             applied,
             LogEventType.OPERATION_COMPLETED,
@@ -723,53 +629,6 @@ class V1Router:
         )
         self._timeline_changed(operation.scope, exclude_operation_id=operation.id)
         return applied
-
-    def _compile_proposal(
-        self,
-        proposal: dict[str, object],
-        text: str,
-        context: InteractionContext,
-        compiled: CompilerResult | None = None,
-    ) -> None:
-        if self._operation_store is None:
-            return
-        compile_context = replace(
-            context,
-            user_input=text,
-            timeline_context={"legacy_proposal": proposal},
-        )
-        result = self._compiler.compile(compile_context)
-        operation = result.operation
-        if compiled is not None:
-            operation = replace(
-                operation,
-                intent=compiled.operation.intent,
-                unresolved_questions=compiled.operation.unresolved_questions,
-                ambiguity=compiled.operation.ambiguity,
-            )
-        self._operation_store.create_snapshot(operation)
-
-    def _complete_operation(self, operation_id: str) -> None:
-        if self._operation_store is None:
-            return
-        operation = self._operation_store.get(operation_id)
-        approved = self._operation_store.transition(
-            operation_id, OperationState.APPROVED, expected_version=operation.version
-        )
-        executing = self._operation_store.transition(
-            operation_id, OperationState.EXECUTING, expected_version=approved.version
-        )
-        self._operation_store.transition(
-            operation_id, OperationState.COMPLETED, expected_version=executing.version
-        )
-
-    def _reject_operation(self, operation_id: str) -> None:
-        if self._operation_store is None:
-            return
-        operation = self._operation_store.get(operation_id)
-        self._operation_store.transition(
-            operation_id, OperationState.REJECTED, expected_version=operation.version
-        )
 
     def _log_proposal_event(
         self,
@@ -809,6 +668,33 @@ def _reminder_values(payload: dict[str, object]) -> dict[str, object]:
         "priority": int(payload.get("priority", 3)),
         "source": str(payload.get("source", "user")),
     }
+
+
+def _canonical_reminders(service: ReminderService) -> dict[str, ReminderDraft]:
+    result: dict[str, ReminderDraft] = {}
+    for value in service.list():
+        trigger = value["trigger"]
+        if not isinstance(trigger, dict):
+            continue
+        reminder_id = str(value["id"])
+        if trigger.get("type") == "time":
+            result[reminder_id] = ReminderDraft(
+                reminder_id,
+                str(value["title"]),
+                "time",
+                at=int(trigger["at"]),
+                priority=int(value.get("priority", 3)),
+            )
+        else:
+            result[reminder_id] = ReminderDraft(
+                reminder_id,
+                str(value["title"]),
+                "window",
+                window=Window(int(trigger["start"]), int(trigger["end"])),
+                delivery=str(value.get("delivery", "exact")),
+                priority=int(value.get("priority", 3)),
+            )
+    return result
 
 
 def _autonomy_dict(policy: AutonomyPolicy) -> dict[str, object]:
@@ -891,6 +777,25 @@ def _interaction_context(value: object) -> InteractionContext:
         current_time=int(value["current_time"]),
         selection=selection,
     )
+
+
+def _semantic_selection(value: TimelineReference | None) -> Reference | Time | None:
+    if value is None:
+        return None
+    if value.type in {"task", "reminder"} and value.id is not None:
+        return Reference(value.type, value.id)
+    if value.type == "time_range" and value.start is not None and value.end is not None:
+        return Time(TimeKind.RANGE, start=value.start, end=value.end)
+    return None
+
+
+def _legacy_view(value: dict[str, object]) -> dict[str, object]:
+    return {
+        **value,
+        "requires_confirmation": False,
+        "read_only": True,
+        "source": "legacy",
+    }
 
 
 def _interaction_context_dict(context: InteractionContext) -> dict[str, object]:

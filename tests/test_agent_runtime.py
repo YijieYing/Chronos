@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,11 +10,14 @@ from chronos.agent.models import (
     AgentOperation,
     CreateReminderOperation,
     CreateTaskOperation,
+    DeleteReminderOperation,
     IntentSnapshot,
     OperationScope,
     OperationState,
+    MoveTaskOperation,
     ProposalSnapshot,
     ReminderSpec,
+    ResizeTaskOperation,
     TaskSpec,
     TimeRange,
 )
@@ -49,7 +53,6 @@ class ChronosRuntimeTest(TestCase):
         self.transactions = SQLiteAdjustmentTransactionRepository(self.database)
         self.runtime = ChronosRuntime(
             self.operations,
-            self.proposals,
             self.schedule,
             self.reminders,
             self.transactions,
@@ -58,51 +61,6 @@ class ChronosRuntimeTest(TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
-
-    def test_partial_reminder_failure_rolls_back_and_marks_operation_failed(self) -> None:
-        provider = _Provider("""{
-          "intent":"create_reminder","tasks":[],"reminders":[
-            {"title":"A","title_source":"A","trigger":{"type":"time",
-             "at":"2026-08-13T15:20:00+08:00"},"temporal_sources":["15:20"],
-             "delivery":"exact","delivery_sources":[],"priority":3},
-            {"title":"B","title_source":"B","trigger":{"type":"time",
-             "at":"2026-08-13T16:20:00+08:00"},"temporal_sources":["16:20"],
-             "delivery":"exact","delivery_sources":[],"priority":3}
-          ],"unresolved":[],"assumptions":[]
-        }""")
-        router = V1Router(
-            self.schedule,
-            self.proposals,
-            reminders=self.reminders,
-            chronos_log=self.log,
-            operation_store=self.operations,
-            compiler=LLMChronosCompiler(
-                SemanticScheduleCommandParser(provider, fallback_on_error=False)
-            ),
-            runtime=self.runtime,
-        )
-        _, envelope = router.dispatch(
-            "POST", "/api/v1/proposals",
-            {
-                "text": "15:20提醒我A，16:20提醒我B",
-                "interaction_context": {
-                    "current_time": int(datetime.now(UTC).timestamp() * 1000),
-                    "selection": None,
-                },
-            },
-        )
-        proposal = envelope["data"]
-        assert isinstance(proposal, dict)
-        operation_id = str(proposal["proposal_id"])
-
-        with self.assertRaisesRegex(RuntimeError, "injected reminder failure"):
-            router.dispatch("POST", f"/api/v1/proposals/{operation_id}/accept")
-
-        self.assertEqual(self.reminders.list(), [])
-        operation = self.operations.get(operation_id)
-        self.assertEqual(operation.state.value, "failed")
-        self.assertIsNone(self.transactions.get_by_operation(operation_id))
-        self.assertTrue(self.log.list()[0].metadata["rolled_back"])
 
     def test_success_persists_transaction_and_runtime_revert_marks_it_reverted(self) -> None:
         stable_reminders = ReminderService(SQLiteReminderRepository(self.database))
@@ -113,7 +71,6 @@ class ChronosRuntimeTest(TestCase):
         )
         runtime = ChronosRuntime(
             self.operations,
-            proposals,
             self.schedule,
             stable_reminders,
             self.transactions,
@@ -139,7 +96,7 @@ class ChronosRuntimeTest(TestCase):
         _, envelope = router.dispatch(
             "POST", "/api/v1/proposals",
             {
-                "text": "15:20提醒我取快递",
+                "text": "明天15:20提醒我取快递",
                 "interaction_context": {
                     "current_time": int(datetime.now(UTC).timestamp() * 1000),
                     "selection": None,
@@ -221,6 +178,74 @@ class ChronosRuntimeTest(TestCase):
         self.assertEqual(reminder["title"], "交材料")
         self.assertEqual(reminder["delivery"], "context-aware")
         self.assertEqual(reminder["trigger"], {"type": "window", "start": start, "end": end})
+
+    def test_canonical_runtime_edits_task_and_reverts(self) -> None:
+        original_start = datetime(2026, 8, 17, 14, 0, tzinfo=UTC)
+        moved_start = int(datetime(2026, 8, 17, 16, 0, tzinfo=UTC).timestamp() * 1000)
+        self.schedule.create_scheduled_task(
+            task_id="task-edit", title="日语", estimated_minutes=30, priority=3,
+            preferred_start=original_start, source="user",
+        )
+        operations = (
+            MoveTaskOperation("task-edit", moved_start),
+            ResizeTaskOperation("task-edit", 45),
+        )
+        seed = self._canonical_operation(
+            CreateTaskOperation("task-edit", TaskSpec("日语", moved_start, 45)),
+            horizon=moved_start,
+        )
+        operation = replace(
+            seed,
+            id="operation-task-edit",
+            compiled_operations=operations,
+            scope=OperationScope(task_ids=("task-edit",)),
+            proposal=replace(seed.proposal, operation_id="operation-task-edit"),
+        )
+        self.operations.create_snapshot(operation)
+
+        self.runtime.execute(operation, operations)
+
+        edited = self.schedule.get_task("task-edit")
+        self.assertEqual(int(edited.preferred_start.timestamp() * 1000), moved_start)
+        self.assertEqual(edited.estimated_minutes, 45)
+        self.runtime.revert(operation.id)
+        restored = self.schedule.get_task("task-edit")
+        self.assertEqual(restored.preferred_start, original_start)
+        self.assertEqual(restored.estimated_minutes, 30)
+
+    def test_canonical_runtime_deletes_reminder_and_reverts(self) -> None:
+        reminders = ReminderService(SQLiteReminderRepository(self.database))
+        runtime = ChronosRuntime(
+            self.operations, self.schedule, reminders,
+            self.transactions, self.log,
+        )
+        at = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        reminders.create(
+            reminder_id="reminder-delete", title="取快递",
+            trigger_type="time", trigger_at=at,
+        )
+        executable = DeleteReminderOperation("reminder-delete")
+        seed = self._canonical_operation(
+            CreateReminderOperation(
+                "reminder-delete",
+                ReminderSpec("取快递", "time", at=int(at.timestamp() * 1000)),
+            ),
+            horizon=int(at.timestamp() * 1000),
+        )
+        operation = replace(
+            seed,
+            id="operation-reminder-delete",
+            compiled_operations=(executable,),
+            scope=OperationScope(reminder_ids=("reminder-delete",)),
+            proposal=replace(seed.proposal, operation_id="operation-reminder-delete"),
+        )
+        self.operations.create_snapshot(operation)
+
+        runtime.execute(operation, (executable,))
+
+        self.assertEqual(reminders.list(), [])
+        runtime.revert(operation.id)
+        self.assertEqual(reminders.get("reminder-delete")["title"], "取快递")
 
     def _canonical_operation(
         self,

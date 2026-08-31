@@ -14,11 +14,11 @@ from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from chronos.agent.adjustment import AdjustmentCoordinator, AdjustmentEngine
-from chronos.agent.compiler import LLMChronosCompiler
 from chronos.agent.flow import Flow
 from chronos.agent.interpreter import Interpreter
 from chronos.agent.legacy_log import migrate_proposal_history
 from chronos.agent.log_service import ChronosLogService
+from chronos.agent.plan import ReminderDraft, Window
 from chronos.agent.projection_service import ProjectionService
 from chronos.agent.runtime import ChronosRuntime
 from chronos.agent.service import OperationStore
@@ -352,6 +352,33 @@ class ScheduleRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def _reminder_drafts(service: ReminderService) -> dict[str, ReminderDraft]:
+    drafts: dict[str, ReminderDraft] = {}
+    for item in service.list():
+        trigger = item["trigger"]
+        if not isinstance(trigger, dict):
+            continue
+        if trigger.get("type") == "time":
+            drafts[str(item["id"])] = ReminderDraft(
+                str(item["id"]),
+                str(item["title"]),
+                "time",
+                at=int(trigger["at"]),
+                delivery="exact",
+                priority=int(item["priority"]),
+            )
+        else:
+            drafts[str(item["id"])] = ReminderDraft(
+                str(item["id"]),
+                str(item["title"]),
+                "window",
+                window=Window(int(trigger["start"]), int(trigger["end"])),
+                delivery=str(item["delivery"]),
+                priority=int(item["priority"]),
+            )
+    return drafts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the local Chronos Schedule prototype")
     parser.add_argument("--host", default="127.0.0.1")
@@ -397,11 +424,10 @@ def main() -> int:
     command_parser = build_command_parser(agent_config, memory_service.retrieve_context)
     model = build_model(agent_config)
     proposal_service = ProposalService(
-        service, proposal_repository, command_parser, reminder_service
+        service, proposal_repository, reminders=reminder_service
     )
     runtime = ChronosRuntime(
         operation_store,
-        proposal_service,
         service,
         reminder_service,
         SQLiteAdjustmentTransactionRepository(args.database),
@@ -416,13 +442,17 @@ def main() -> int:
         chronos_log_service,
         operation_store,
         projection_service,
-        LLMChronosCompiler(command_parser)
-        if isinstance(command_parser, SemanticScheduleCommandParser)
-        else None,
+        None,
         runtime,
         adjustment_coordinator,
-        Flow(Interpreter(model), operation_store, service, chronos_log_service)
-        if model is not None else None,
+        Flow(
+            Interpreter(model),
+            operation_store,
+            service,
+            chronos_log_service,
+            reminder_ids=lambda: tuple(item["id"] for item in reminder_service.list()),
+            reminder_drafts=lambda: _reminder_drafts(reminder_service),
+        ),
     )
     adjustment_coordinator.scan_safely()
     root = Path(__file__).resolve().parents[3] / "web" / "dist"

@@ -66,7 +66,7 @@ class ProjectionServiceTest(TestCase):
         )
         self.assertEqual(self.service.list_active(), [])
 
-    def test_real_operation_projection_wins_over_legacy_adapter(self) -> None:
+    def test_active_projection_comes_only_from_canonical_operation(self) -> None:
         operation = self.store.create(
             IntentSnapshot("create_task", "创建阅读任务"),
             operation_id="shared",
@@ -91,20 +91,16 @@ class ProjectionServiceTest(TestCase):
             ),
             expected_version=1,
         )
-        legacy = self._legacy_proposal("shared", "pending")
+        self.assertEqual(self.service.list_active(), [projection])
 
-        self.assertEqual(self.service.list_active((legacy,)), [projection])
-
-    def test_real_operation_without_projection_still_suppresses_legacy_adapter(self) -> None:
+    def test_canonical_operation_without_projection_returns_no_projection(self) -> None:
         self.store.create(
             IntentSnapshot("query", "查询时间轴"),
             operation_id="shared-empty",
             now=self.now,
         )
 
-        projections = self.service.list_active(
-            (self._legacy_proposal("shared-empty", "pending"),)
-        )
+        projections = self.service.list_active()
 
         self.assertEqual(projections, [])
 

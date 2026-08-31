@@ -56,8 +56,9 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
         }
         if (proposalResult.status === "fulfilled") {
           const pending = proposalResult.value.filter(
-            (proposal) => proposal.status === "pending"
-              || proposal.status === "needs_clarification",
+            (proposal) => proposal.source === "canonical" && !proposal.readOnly && (
+              proposal.requiresConfirmation || proposal.status === "needs_clarification"
+            ),
           );
           setCommands(pending.map(proposalToCommand));
         }
@@ -317,6 +318,10 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
         if (proposal.task) setFocusTarget(proposal.task.start);
       } else if (proposal.results.length) {
         setFocusTarget(proposal.results[0].start);
+      } else if (proposal.status === "failed") {
+        throw new Error(
+          proposal.explanation.join(" ") || "Chronos could not interpret this request.",
+        );
       }
       await refreshLog();
       await onOperationsChanged?.();
@@ -458,8 +463,9 @@ export function useTimelineStore(onOperationsChanged?: () => Promise<void>) {
     await Promise.all([refreshLog(), onOperationsChanged?.()]);
     const proposals = await loadProposals();
     setCommands(proposals
-      .filter((proposal) => proposal.status === "pending"
-        || proposal.status === "needs_clarification")
+      .filter((proposal) => proposal.source === "canonical" && !proposal.readOnly && (
+        proposal.requiresConfirmation || proposal.status === "needs_clarification"
+      ))
       .map(proposalToCommand));
   }
 
@@ -529,6 +535,11 @@ function proposalToCommand(proposal: ScheduleProposal): AgentCommand {
       : (reminder.trigger.start + reminder.trigger.end) / 2;
     return `◇ ${formatTime(time)} · ${reminder.title} · ${reminder.delivery}`;
   });
+  const taskLines = proposal.proposedTasks.map((task) => {
+    const time = new Date(task.preferred_start).getTime();
+    const recurrence = task.recurrence?.frequency ?? "once";
+    return `${formatTime(time)} · ${task.title} · ${task.estimated_minutes} min · ${recurrence}`;
+  });
   return {
     id: proposal.id,
     cursorTime,
@@ -536,24 +547,20 @@ function proposalToCommand(proposal: ScheduleProposal): AgentCommand {
       ? "Chronos needs clarification"
       : proposal.reminderDrafts.length
         ? `${proposal.reminderDrafts.length} REMINDER BEACON${proposal.reminderDrafts.length > 1 ? "S" : ""}`
-      : proposal.proposedTasks.length > 1
-        ? `${proposal.proposedTasks.length} TASK PLAN`
+      : proposal.proposedTasks.length
+        ? `${proposal.proposedTasks.length} TASK CHANGE${proposal.proposedTasks.length > 1 ? "S" : ""}`
         : change ? `${change.operation.toUpperCase()} proposal` : "Schedule proposal",
     lines: needsClarification
       ? proposal.clarifications.map((item) => item.question)
       : [
       ...reminderLines,
-      ...(proposal.proposedTasks.length > 1
-        ? proposal.proposedTasks.map((task) => {
-            const time = new Date(task.preferred_start).getTime();
-            const recurrence = task.recurrence?.frequency ?? "once";
-            return `${formatTime(time)} · ${task.title} · ${recurrence}`;
-          })
-        : proposal.task
+      ...taskLines,
+      ...(proposal.proposedTasks.length === 0 && proposal.task
           ? [`${formatTime(proposal.task.start)}–${formatTime(proposal.task.end)}`, proposal.task.title]
           : []),
+      ...proposal.changes.map((item) => item.summary),
       proposal.conflicts.length
-        ? `${proposal.conflicts.length} conflict(s) reported`
+        ? proposal.conflicts.map((item) => `${item.code}: ${item.message}`).join(" · ")
         : "Planner verified",
       ...proposal.parserWarnings,
     ],
@@ -565,7 +572,7 @@ function proposalToCommand(proposal: ScheduleProposal): AgentCommand {
           : "rejected",
     proposedTask: proposal.task ?? undefined,
     contextUsed: proposal.contextUsed.map((item) => item.content),
-    canResolve: proposal.status === "pending",
+    canResolve: proposal.requiresConfirmation && !proposal.readOnly,
   };
 }
 

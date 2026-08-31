@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 
 
@@ -77,6 +78,21 @@ class Reference:
     def __post_init__(self) -> None:
         if not self.type or not self.id:
             raise ValueError("reference type and id are required")
+
+
+@dataclass(frozen=True, slots=True)
+class Object:
+    type: str
+    id: str
+    title: str
+
+    def __post_init__(self) -> None:
+        if self.type not in {"task", "reminder"} or not self.id or not self.title.strip():
+            raise ValueError("object requires a supported type, id, and title")
+
+    @property
+    def reference(self) -> Reference:
+        return Reference(self.type, self.id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +221,25 @@ class Duration:
             raise ValueError("duration range requires ordered positive bounds")
 
 
+@dataclass(frozen=True, slots=True)
+class Recurrence:
+    frequency: str
+    weekdays: tuple[int, ...] = ()
+    until: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.frequency not in {"daily", "weekly"}:
+            raise ValueError("recurrence frequency must be daily or weekly")
+        days = tuple(sorted(set(self.weekdays)))
+        if self.frequency == "weekly" and (not days or any(day < 0 or day > 6 for day in days)):
+            raise ValueError("weekly recurrence requires weekdays from 0 to 6")
+        if self.frequency == "daily" and days:
+            raise ValueError("daily recurrence cannot contain weekdays")
+        object.__setattr__(self, "weekdays", days)
+        if self.until is not None:
+            date.fromisoformat(self.until)
+
+
 class RelationKind(StrEnum):
     INCLUDES = "includes"
     PART_OF = "part_of"
@@ -311,11 +346,13 @@ class Event:
     request: Request
     time: Time
     duration: Duration | None = None
+    recurrence: Recurrence | None = None
     references: tuple[Reference, ...] = ()
     relations: tuple[Relation, ...] = ()
     gaps: tuple[Gap, ...] = ()
     residue: tuple[Residue, ...] = ()
     provenance: tuple[Provenance, ...] = ()
+    title: str | None = None
 
     def __post_init__(self) -> None:
         if not self.id or not self.item_ids or not self.content:
@@ -334,6 +371,11 @@ class Event:
             raise ValueError("event relation ids must be unique")
         if self.time.type == TimeKind.RELATIVE and self.time.relation_id not in relation_ids:
             raise ValueError("relative time must reference an event relation")
+        if self.title is not None:
+            title = self.title.strip()
+            if not title:
+                raise ValueError("event title cannot be blank")
+            object.__setattr__(self, "title", title)
 
 
 class DirectiveKind(StrEnum):

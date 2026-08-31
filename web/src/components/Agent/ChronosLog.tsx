@@ -259,6 +259,7 @@ function canRestore(
   revertedOperationIds: Set<string | undefined>,
   restoredEntryIds: Set<string>,
 ) {
+  if (entry.metadata.legacy_import === true) return false;
   if (restoredEntryIds.has(entry.id)) return false;
   if (entry.eventType === "operation_completed" && entry.operationId) {
     return !revertedOperationIds.has(entry.operationId);

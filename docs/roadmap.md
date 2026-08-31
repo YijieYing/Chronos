@@ -5,6 +5,23 @@ not part of the current implementation. Each item should state its current limit
 outcome, and delivery checkpoints. Completed work should move to release notes or architecture
 documentation instead of remaining here.
 
+## Deferred runtime performance
+
+Functionality is being stabilized before this work starts, but these confirmed issues must not be
+lost:
+
+- Make the macOS Monitor bridge a singleton. Repeated `run-mac-app.sh` launches currently leave
+  duplicate `monitor_runner` / `chronos-mac-agent` pairs that reconnect after Schedule restarts.
+- Make launcher cleanup reliable across signals, independently launched shells, and backend
+  replacement; health capability equality is not sufficient to prove process ownership or code
+  freshness.
+- Reduce continuous WKWebView rendering. Per-task infinite waveform animation, Ambient Wave, NOW
+  pulse, reminder breathing, and large backdrop blurs currently keep WebKit GPU/WebContent active.
+- Pause decorative animation while the app is hidden or inactive, honor `prefers-reduced-motion`,
+  and prefer one shared low-frequency animation clock over one animation per timeline object.
+- Add a repeatable idle CPU/GPU/process-count check for one Schedule service, one Monitor bridge,
+  one native collector, and one app window.
+
 ## Agent understanding and planning pipeline
 
 ### Agreed architecture

@@ -1,4 +1,4 @@
-"""Read model for active Timeline projections and legacy proposal compatibility."""
+"""Read model for active canonical Timeline projections."""
 
 from __future__ import annotations
 
@@ -16,23 +16,14 @@ class ProjectionService:
     def __init__(self, operations: OperationStore) -> None:
         self._operations = operations
 
-    def list_active(
-        self, legacy_proposals: tuple[dict[str, object], ...] = ()
-    ) -> list[TimelineProjection]:
+    def list_active(self) -> list[TimelineProjection]:
         operations = self._operations.active()
-        active = [
+        return [
             projection
             for operation in operations
             if operation.state != OperationState.STALE
             for projection in operation.projections
         ]
-        operation_ids = {item.id for item in operations}
-        for proposal in legacy_proposals:
-            operation_id = str(proposal["proposal_id"])
-            if operation_id in operation_ids:
-                continue
-            active.extend(proposal_projections(proposal))
-        return active
 
 
 def proposal_projections(proposal: dict[str, object]) -> tuple[TimelineProjection, ...]:

@@ -23,6 +23,7 @@ from chronos.agent.meaning import (
     Period,
     Precision,
     Provenance,
+    Recurrence,
     Reference,
     Relation,
     RelationKind,
@@ -465,6 +466,7 @@ def _item_from_dict(value: dict[str, object]) -> Item:
 
 def _event_from_dict(value: dict[str, object]) -> Event:
     duration = value.get("duration")
+    recurrence = value.get("recurrence")
     return Event(
         id=str(value["id"]),
         item_ids=tuple(str(item) for item in _list(value["item_ids"], "item_ids")),
@@ -476,6 +478,10 @@ def _event_from_dict(value: dict[str, object]) -> Event:
         request=_semantic_request_from_dict(_dict(value["request"], "request")),
         time=_semantic_time_from_dict(_dict(value["time"], "time")),
         duration=_duration_from_dict(_dict(duration, "duration")) if duration else None,
+        recurrence=(
+            _semantic_recurrence_from_dict(_dict(recurrence, "recurrence"))
+            if recurrence else None
+        ),
         references=tuple(
             _semantic_reference_from_dict(_dict(item, "reference"))
             for item in _list(value.get("references", []), "references")
@@ -504,6 +510,7 @@ def _event_from_dict(value: dict[str, object]) -> Event:
             for raw in _list(value.get("provenance", []), "provenance")
             for data in [_dict(raw, "provenance")]
         ),
+        title=str(value["title"]) if value.get("title") else None,
     )
 
 
@@ -551,6 +558,14 @@ def _duration_from_dict(value: dict[str, object]) -> Duration:
         minutes=int(value["minutes"]) if value.get("minutes") is not None else None,
         minimum=int(value["minimum"]) if value.get("minimum") is not None else None,
         maximum=int(value["maximum"]) if value.get("maximum") is not None else None,
+    )
+
+
+def _semantic_recurrence_from_dict(value: dict[str, object]) -> Recurrence:
+    return Recurrence(
+        str(value["frequency"]),
+        tuple(int(item) for item in _list(value.get("weekdays", []), "weekdays")),
+        str(value["until"]) if value.get("until") else None,
     )
 
 
@@ -632,6 +647,7 @@ def _plan_from_dict(value: dict[str, object]) -> Plan:
 def _change_from_dict(value: dict[str, object]) -> Change:
     task = value.get("task")
     reminder = value.get("reminder")
+    window = value.get("window")
     return Change(
         event_id=str(value["event_id"]),
         request=RequestKind(str(value["request"])),
@@ -641,15 +657,26 @@ def _change_from_dict(value: dict[str, object]) -> Change:
             if reminder else None
         ),
         target_id=str(value["target_id"]) if value.get("target_id") else None,
+        target_type=str(value["target_type"]) if value.get("target_type") else None,
+        at=int(value["at"]) if value.get("at") is not None else None,
+        duration=int(value["duration"]) if value.get("duration") is not None else None,
+        window=(
+            Window(int(window["start"]), int(window["end"]))
+            if isinstance(window, dict) else None
+        ),
     )
 
 
 def _task_draft_from_dict(value: dict[str, object]) -> TaskDraft:
     window = value.get("window")
+    recurrence = value.get("recurrence")
     return TaskDraft(
         str(value["id"]), str(value["title"]), int(value["start"]), int(value["duration"]),
         Window(int(window["start"]), int(window["end"])) if isinstance(window, dict) else None,
         _bool(value.get("fixed", False), "fixed"),
+        int(value.get("priority", 3)),
+        _semantic_recurrence_from_dict(_dict(recurrence, "recurrence"))
+        if recurrence else None,
     )
 
 

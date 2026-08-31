@@ -86,6 +86,16 @@ class BoundaryTest(TestCase):
         self.assertNotIn("Planner", source)
         self.assertIn("self._apply", source)
 
+    def test_runtime_and_routes_have_no_legacy_agent_write_path(self) -> None:
+        runtime = inspect.getsource(ChronosRuntime)
+        routes = (ROOT / "src/chronos/api/routes/v1.py").read_text()
+        self.assertNotIn("ProposalService", runtime)
+        self.assertNotIn("execute_legacy", runtime)
+        self.assertNotIn("revert_legacy", runtime)
+        self.assertNotIn("execute_legacy", routes)
+        self.assertNotIn("revert_legacy", routes)
+        self.assertNotIn("create_from_compiler", routes)
+
     def test_proposal_is_a_view_reference_not_an_execution_payload(self) -> None:
         names = {item.name for item in fields(ProposalSnapshot)}
         self.assertNotIn("operations", names)

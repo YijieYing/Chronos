@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from chronos.agent.meaning import RequestKind
+from chronos.agent.meaning import Recurrence, RequestKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,10 +38,14 @@ class TaskDraft:
     duration: int
     window: Window | None = None
     fixed: bool = False
+    priority: int = 3
+    recurrence: Recurrence | None = None
 
     def __post_init__(self) -> None:
         if not self.id or not self.title.strip() or self.start <= 0 or self.duration <= 0:
             raise ValueError("task draft requires id, title, start, and duration")
+        if not 1 <= self.priority <= 5:
+            raise ValueError("task priority must be between 1 and 5")
         if self.window is not None and not self.window.start <= self.start < self.window.end:
             raise ValueError("task draft start must fall inside its window")
         end = self.start + self.duration * 60_000
@@ -81,15 +85,50 @@ class Change:
     task: TaskDraft | None = None
     reminder: ReminderDraft | None = None
     target_id: str | None = None
+    target_type: str | None = None
+    at: int | None = None
+    duration: int | None = None
+    window: Window | None = None
 
     def __post_init__(self) -> None:
         if not self.event_id:
             raise ValueError("change requires a source Event")
         if self.request == RequestKind.ADD:
-            if (self.task is None) == (self.reminder is None) or self.target_id is not None:
+            if (
+                (self.task is None) == (self.reminder is None)
+                or self.target_id is not None
+                or self.target_type is not None
+                or self.at is not None
+                or self.duration is not None
+                or self.window is not None
+            ):
                 raise ValueError("add change requires exactly one draft")
-        elif self.target_id is None:
-            raise ValueError("edit/delete change requires a target")
+            return
+        if not self.target_id or self.target_type not in {"task", "reminder"}:
+            raise ValueError("edit/delete change requires a typed target")
+        if self.reminder is not None:
+            if self.request != RequestKind.EDIT or self.target_type != "reminder":
+                raise ValueError("only reminder edits can carry a reminder draft")
+            if self.at is not None or self.duration is not None or self.window is not None:
+                raise ValueError("reminder draft edits cannot carry primitive values")
+            return
+        if self.task is not None:
+            if self.request != RequestKind.EDIT or self.target_type != "task":
+                raise ValueError("only task edits can carry a task draft")
+            if self.at is not None or self.duration is not None or self.window is not None:
+                raise ValueError("task draft edits cannot carry primitive values")
+            return
+        if self.request == RequestKind.DELETE:
+            if self.at is not None or self.duration is not None or self.window is not None:
+                raise ValueError("delete change cannot carry edited values")
+            return
+        if self.target_type == "task":
+            if self.window is not None or (self.at is None and self.duration is None):
+                raise ValueError("task edit requires time or duration")
+        elif self.duration is not None or (self.at is None) == (self.window is None):
+            raise ValueError("reminder edit requires exactly one trigger")
+        if self.duration is not None and self.duration <= 0:
+            raise ValueError("edited duration must be positive")
 
 
 @dataclass(frozen=True, slots=True)

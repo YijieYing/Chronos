@@ -12,16 +12,24 @@ from chronos.agent.models import (
     AgentOperation,
     CreateReminderOperation,
     CreateTaskOperation,
+    DeleteReminderOperation,
+    DeleteTaskOperation,
     LogEventType,
+    MoveReminderOperation,
+    MoveTaskOperation,
     OperationState,
+    RecurrenceSpec,
+    ResizeTaskOperation,
     ScheduleSnapshot,
     TimelineOperation,
     TransactionStatus,
+    UpdateReminderOperation,
+    UpdateTaskOperation,
 )
 from chronos.agent.ports import AdjustmentTransactionRepository
 from chronos.agent.service import OperationStore
 from chronos.reminders.service import ReminderService
-from chronos.schedule.proposals import ProposalService, _reminder_from_dict, _scheduled_values
+from chronos.schedule.proposals import _reminder_from_dict, _scheduled_values
 from chronos.schedule.service import ScheduleService, _task_dict
 
 
@@ -29,14 +37,12 @@ class ChronosRuntime:
     def __init__(
         self,
         operations: OperationStore,
-        proposals: ProposalService,
         schedule: ScheduleService,
         reminders: ReminderService | None,
         transactions: AdjustmentTransactionRepository,
         chronos_log: ChronosLogService | None = None,
     ) -> None:
         self._operations = operations
-        self._proposals = proposals
         self._schedule = schedule
         self._reminders = reminders
         self._transactions = transactions
@@ -108,66 +114,8 @@ class ChronosRuntime:
                 )
             raise
 
-    def execute_legacy(
-        self, operation_id: str
-    ) -> tuple[dict[str, object], AdjustmentTransaction]:
-        """Compatibility boundary for the old ProposalService execution path.
-
-        New pipeline code must never call this method.  It remains only until
-        the existing API route has migrated to Plan -> Operations -> Runtime.
-        """
-
-        operation = self._operations.get(operation_id)
-        self._validate_legacy(operation)
-        before = self._snapshot()
-        approved = self._operations.transition(
-            operation_id, OperationState.APPROVED, expected_version=operation.version
-        )
-        executing = self._operations.transition(
-            operation_id, OperationState.EXECUTING, expected_version=approved.version
-        )
-        try:
-            proposal = self._proposals.accept(operation_id)
-            after = self._snapshot()
-            transaction = AdjustmentTransaction(
-                id=str(uuid4()),
-                operation_id=operation_id,
-                before_state=before,
-                operations=operation.compiled_operations,
-                after_state=after,
-                status=TransactionStatus.APPLIED,
-                created_at=datetime.now(UTC),
-            )
-            self._transactions.save(transaction)
-            self._operations.transition(
-                operation_id,
-                OperationState.COMPLETED,
-                expected_version=executing.version,
-            )
-            return proposal, transaction
-        except Exception as error:
-            self._rollback_scope(operation, before)
-            current_proposal = self._proposals.get(operation_id)
-            if current_proposal.get("status") == "accepted":
-                self._proposals.mark_runtime_rolled_back(operation_id)
-            self._operations.transition(
-                operation_id,
-                OperationState.FAILED,
-                expected_version=executing.version,
-                failure_reason=str(error),
-            )
-            if self._log is not None:
-                self._log.append(
-                    LogEventType.OPERATION_FAILED,
-                    "执行失败，已回滚到操作前状态。",
-                    operation_id=operation_id,
-                    references=operation.references,
-                    metadata={"failure_reason": str(error), "rolled_back": True},
-                )
-            raise
-
     def revert(self, operation_id: str) -> AdjustmentTransaction:
-        """Restore the canonical transaction snapshot without ProposalService."""
+        """Restore the canonical transaction snapshot directly through domain services."""
 
         transaction = self._transactions.get_by_operation(operation_id)
         if transaction is None:
@@ -188,37 +136,22 @@ class ChronosRuntime:
             )
         return reverted
 
-    def revert_legacy(self, operation_id: str) -> dict[str, object]:
-        """Compatibility boundary for legacy proposal-shaped restore output."""
-
-        transaction = self._transactions.get_by_operation(operation_id)
-        if transaction is None:
-            raise KeyError(operation_id)
-        if transaction.status != TransactionStatus.APPLIED:
-            raise ValueError("transaction is already reverted")
-        proposal = self._proposals.restore(operation_id)
-        self._transactions.save(replace(transaction, status=TransactionStatus.REVERTED))
-        return proposal
-
     def _validate_execution(
         self,
         operation: AgentOperation,
         operations: tuple[TimelineOperation, ...],
     ) -> None:
         if operation.state != OperationState.PROPOSED:
-            raise ValueError("Runtime requires a proposed Operation")
+            raise ValueError(
+                "Runtime requires a proposed Operation; "
+                f"received {operation.state.value}"
+            )
         if not operations or operation.proposal is None:
             raise ValueError("Runtime requires validated compiled operations")
         if operations != operation.compiled_operations:
             raise ValueError("Runtime operations must match the Operation snapshot")
         if not operation.reversible:
             raise ValueError("first-version Runtime only executes reversible Operations")
-
-    def _validate_legacy(self, operation: AgentOperation) -> None:
-        self._validate_execution(operation, operation.compiled_operations)
-        proposal = self._proposals.get(operation.id)
-        if proposal.get("status") != "pending":
-            raise ValueError("Runtime proposal is not pending")
 
     def _apply(self, executable: TimelineOperation, operation: AgentOperation) -> None:
         if isinstance(executable, CreateTaskOperation):
@@ -232,8 +165,39 @@ class ChronosRuntime:
                 preferred_start=datetime.fromtimestamp(task.start / 1000, UTC),
                 task_type=task.task_type,
                 fixed=task.fixed,
+                recurrence=_recurrence_dict(task.recurrence),
                 source="agent",
             )
+            return
+        if isinstance(executable, UpdateTaskOperation):
+            self._guard_time(executable.task.start, operation)
+            task = executable.task
+            self._schedule.update_scheduled_task(
+                executable.task_id,
+                title=task.title,
+                estimated_minutes=task.duration_minutes,
+                priority=task.adjustment_policy.priority,
+                preferred_start=datetime.fromtimestamp(task.start / 1000, UTC),
+                task_type=task.task_type,
+                fixed=task.fixed,
+                recurrence=_recurrence_dict(task.recurrence),
+            )
+            return
+        if isinstance(executable, MoveTaskOperation):
+            self._guard_time(executable.start, operation)
+            self._schedule.update_scheduled_task(
+                executable.task_id,
+                preferred_start=datetime.fromtimestamp(executable.start / 1000, UTC),
+            )
+            return
+        if isinstance(executable, ResizeTaskOperation):
+            self._schedule.update_scheduled_task(
+                executable.task_id, estimated_minutes=executable.duration_minutes
+            )
+            return
+        if isinstance(executable, DeleteTaskOperation):
+            if not self._schedule.delete_scheduled_task(executable.task_id):
+                raise KeyError(executable.task_id)
             return
         if isinstance(executable, CreateReminderOperation):
             if self._reminders is None:
@@ -267,7 +231,71 @@ class ChronosRuntime:
                 source="agent",
             )
             return
+        if isinstance(executable, UpdateReminderOperation):
+            reminder = executable.reminder
+            if reminder.at is not None:
+                self._guard_time(reminder.at, operation)
+            elif reminder.window is not None:
+                self._guard_time(reminder.window.start, operation)
+            current = self._reminder(executable.reminder_id)
+            self._reminders.delete(executable.reminder_id)
+            self._reminders.create(
+                reminder_id=executable.reminder_id,
+                title=reminder.title,
+                trigger_type=reminder.trigger_type,
+                trigger_at=(
+                    datetime.fromtimestamp(reminder.at / 1000, UTC)
+                    if reminder.at is not None else None
+                ),
+                window_start=(
+                    datetime.fromtimestamp(reminder.window.start / 1000, UTC)
+                    if reminder.window is not None else None
+                ),
+                window_end=(
+                    datetime.fromtimestamp(reminder.window.end / 1000, UTC)
+                    if reminder.window is not None else None
+                ),
+                delivery=reminder.delivery,
+                priority=reminder.priority,
+                source=str(current["source"]),
+                created_at=datetime.fromisoformat(str(current["created_at"])),
+            )
+            return
+        if isinstance(executable, MoveReminderOperation):
+            start = executable.at or executable.window.start  # type: ignore[union-attr]
+            self._guard_time(start, operation)
+            current = self._reminder(executable.reminder_id)
+            values = _reminder_from_dict(current)
+            values.update({
+                "trigger_type": "time" if executable.at is not None else "window",
+                "trigger_at": (
+                    datetime.fromtimestamp(executable.at / 1000, UTC)
+                    if executable.at is not None else None
+                ),
+                "window_start": (
+                    datetime.fromtimestamp(executable.window.start / 1000, UTC)
+                    if executable.window is not None else None
+                ),
+                "window_end": (
+                    datetime.fromtimestamp(executable.window.end / 1000, UTC)
+                    if executable.window is not None else None
+                ),
+            })
+            if executable.at is not None:
+                values["delivery"] = "exact"
+            self._reminders.delete(executable.reminder_id)
+            self._reminders.create(**values)
+            return
+        if isinstance(executable, DeleteReminderOperation):
+            self._reminder(executable.reminder_id)
+            self._reminders.delete(executable.reminder_id)
+            return
         raise ValueError(f"Runtime does not support operation type: {executable.type}")
+
+    def _reminder(self, reminder_id: str) -> dict[str, object]:
+        if self._reminders is None:
+            raise ValueError("Reminder service is unavailable")
+        return self._reminders.get(reminder_id)
 
     @staticmethod
     def _guard_time(start: int, operation: AgentOperation) -> None:
@@ -325,3 +353,14 @@ class ChronosRuntime:
                 if current is not None:
                     self._reminders.delete(reminder_id)
                 self._reminders.create(**_reminder_from_dict(before))
+
+
+def _recurrence_dict(value: RecurrenceSpec | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    result: dict[str, object] = {"frequency": value.frequency}
+    if value.weekdays:
+        result["weekdays"] = list(value.weekdays)
+    if value.until is not None:
+        result["until"] = value.until
+    return result

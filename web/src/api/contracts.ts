@@ -33,6 +33,8 @@ export interface ProposalPayload {
   proposal_id: string;
   status: "pending" | "accepted" | "rejected" | "restored" | "informational" | "needs_clarification" | "stale" | "failed";
   requires_confirmation?: boolean;
+  read_only?: boolean;
+  source?: "canonical" | "legacy";
   request_text: string;
   proposed_task: TimelineTaskPayload | null;
   proposed_tasks?: Array<{
@@ -44,8 +46,13 @@ export interface ProposalPayload {
     fixed: boolean;
   }>;
   results?: TimelineTaskPayload[];
-  changes: Array<{ operation: string; task_id: string; summary: string }>;
-  conflicts: Array<{ task_id: string; reason: string; remaining_minutes: number }>;
+  changes: Array<{
+    operation: string;
+    target_type: "task" | "reminder";
+    target_id: string;
+    summary: string;
+  }>;
+  conflicts: Array<{ event_id: string; code: string; message: string }>;
   explanation: string[];
   context_used?: Array<{
     context_id: string;

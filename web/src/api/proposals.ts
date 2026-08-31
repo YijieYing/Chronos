@@ -19,6 +19,9 @@ export interface ScheduleProposal {
   clarifications: NonNullable<ProposalPayload["clarifications"]>;
   assumptions: string[];
   reminderDrafts: NonNullable<ProposalPayload["reminder_drafts"]>;
+  requiresConfirmation: boolean;
+  readOnly: boolean;
+  source: "canonical" | "legacy";
 }
 
 export async function createProposal(
@@ -107,6 +110,9 @@ function fromProposal(payload: ProposalPayload): ScheduleProposal {
     clarifications: payload.clarifications ?? [],
     assumptions: payload.assumptions ?? [],
     reminderDrafts: payload.reminder_drafts ?? [],
+    requiresConfirmation: payload.requires_confirmation === true,
+    readOnly: payload.read_only === true,
+    source: payload.source ?? "legacy",
   };
 }
 
