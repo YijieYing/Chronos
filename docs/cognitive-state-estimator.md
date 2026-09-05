@@ -1,5 +1,12 @@
 # Cognitive State Estimator
 
+Implementation status, 2026-09-05: this is a design specification, not an acceptance report.
+The Python rule estimator, five-minute SQLite points and frontend current/history consumption exist.
+The complete late-evidence/two-bucket revision contract, durable hourly/daily summaries, production
+multi-device/user identity model, shared backend Forecast and personal calibration are not all implemented.
+Treat those clauses below as targets. See the [feature audit](feature-audit-2026-09-05.md) and
+[P3 roadmap](roadmap.md) for current scope and sequencing.
+
 ## Responsibility
 
 The Cognitive State Estimator is the boundary between Monitor evidence and every consumer that

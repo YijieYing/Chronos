@@ -1,289 +1,130 @@
 # Chronos
 
-Chronos is a local-first work-state estimation and dynamic planning engine. It observes what a
-person is doing now, stabilizes those observations into activity history, and will use that history
-to revise future plans.
+Chronos 是本地优先的个人日程和状态管理助手原型。它把自然语言请求转成可审阅的日程操作，
+展示任务、提醒和活动状态；长期目标是把计划、实际执行、个人状态与可控的主动建议连接起来。
 
-Chronos is independent from Daytrace. A future integration may export finalized activity segments
-to Daytrace as one of its information sources.
+## 当前进度
 
-## Current scope
+截至 2026-09-05，后端主链已建立，产品正在做可靠性收尾，尚不能作为已完成的自动日程助手。
 
-The first vertical slice focuses on recognizing current activity:
+- 已有：Task/Reminder 基本 CRUD、日内排程及 daily/weekly 重复、澄清与提案、日志和投影、
+  自治策略基础、macOS 活动采集、规则认知状态与近期历史、个人资料导入管理。
+- 尚未闭环：多事项时间理解、澄清稳定性、编辑/Undo 保真、前端执行反馈与提醒命中、
+  后台生命周期。到时系统通知、实际执行管理、状态参与规划仍待实现。
+- MEMORY SYNC 能导入和管理资料，但当前 canonical Flow 尚未使用该检索上下文。
+  前端 Forecast 是估计展示，不是后端权威预测；无新鲜观测时的 DEMO DATA 不代表真实状态。
+
+完整清单和可复现缺陷见[功能调查](docs/feature-audit-2026-09-05.md)，
+开发顺序见[产品路线图](docs/roadmap.md)，职责见[架构](docs/architecture.md)。
+调查覆盖工作区中此前未提交的代码；本次文档提交不包含那些功能改动。
+
+## 架构
 
 ```text
-platform signals
-    -> Observation
-    -> FeatureWindow
-    -> WorkStateEstimate
-    -> ActivitySegment
+Prompt → Parser → Items → Interpreter → Events → Planner → Plan
+       → Lowerer → Operations → Runtime → Schedule / Reminder
 ```
 
-- `Observation` is normalized evidence without behavioral interpretation.
-- `FeatureWindow` is a deterministic, bounded aggregation of recent evidence.
-- `WorkStateEstimate` is a real-time hypothesis that later evidence may revise.
-- `ActivitySegment` is a stabilized interval suitable for durable history.
-
-Raw keyboard and pointer events are expected to be aggregated inside platform agents. Chronos does
-not store key contents or an unbounded event stream.
-
-The live recognizer keeps at most 2,000 observations and expires observations older than 10 minutes.
-TTL cleanup runs whenever a new observation arrives; capacity remains a hard bound even while idle.
-
-## Architecture
+Proposal、Log、Projection 围绕这条主链提供生命周期与展示，不拥有另一份可执行真相。
+Monitor 独立采集与估计状态；当前还没有完整接入 Agent 的规划上下文。
 
 ```text
 src/chronos/
-├── monitor/          # What the user is doing now and what happened
-├── schedule/         # Tasks, constraints, plans, and calendar operations
-├── adaptation/       # Reconciliation, proposals, prompts, and automation policy
-├── infrastructure/   # Persistence, event delivery, clocks, and external adapters
-└── api/              # CLI and future local HTTP/UI boundaries
-
-apps/mac-agent/        # Native macOS observation agent
+├── agent/           # 解释、规划、操作、授权、日志和投影
+├── schedule/        # 任务、约束、Agenda 与有限时域重复投影
+├── reminders/       # 不占排程容量的提醒
+├── monitor/         # 活动证据与状态估计
+├── infrastructure/  # SQLite 等适配器
+└── api/             # 本地 HTTP 与 CLI
+apps/mac-agent/      # 原生采集器
+apps/mac-app/        # WKWebView 桌面壳
+web/                # React / TypeScript 时间轴
 ```
 
-Chronos is a modular monolith. Monitor and Schedule are independent bounded contexts. Adaptation
-connects them through published events and explicit commands; neither Monitor nor Schedule depends
-on Adaptation. See [docs/architecture.md](docs/architecture.md).
+## 启动
 
-The estimator runs locally with deterministic rules. An optional `SemanticInferenceProvider`
-boundary allows an LLM or another model to enrich ambiguous activity and task semantics without
-making basic presence detection depend on a network service.
+Python 核心要求 Python 3.12+，无第三方运行时依赖。前端需要 Node/npm；macOS 原生组件需要 Swift 工具链。
 
-## Development
-
-The core currently has no runtime dependencies and requires Python 3.12 or later.
-
-```bash
-PYTHONPATH=src python -m unittest discover -s tests -v
-```
-
-## macOS live loop
-
-The first native agent implements three collectors:
-
-- input activity: aggregated keyboard, click, pointer, scroll, and idle metrics;
-- foreground context: frontmost application plus the focused window title when permitted;
-- session state: sleep, wake, screen sleep/wake, and active-session changes.
-
-Build it with:
-
-```bash
-swift build --package-path apps/mac-agent
-```
-
-Run the agent and pipe its Observation JSONL stream into the recognizer:
-
-```bash
-./scripts/run-mac-loop.sh --device-id my-macbook
-```
-
-The recognizer prints a versioned `chronos.monitor_snapshot` after input windows and important
-session changes. Each snapshot contains independent collector modules under `observations.modules`
-and independent inference modules under `work_state.modules`. Stop it with `Ctrl-C`.
-
-### Permissions
-
-The agent requests only the permissions needed by an enabled collector:
-
-- **Input Monitoring** enables global keyboard and pointer event counts. Chronos never records key
-  contents or full pointer trails.
-- **Accessibility** enables focused-window titles. Without it, foreground application identity is
-  still collected.
-
-Grant access in **System Settings → Privacy & Security**, then restart the agent. If a permission is
-denied, that collector degrades independently and the rest of the live loop continues running.
-
-Screen Recording is not used by this version.
-
-## Schedule prototype
-
-Schedule runs independently from Monitor across the full 24-hour day. It includes task intake,
-fixed-task constraints, deterministic planning, explicit unscheduled remainders, plan versions, and
-draft activation. State is persisted locally in SQLite.
-
-The UI is a React/TypeScript temporal field rendered with SVG and animated with Framer Motion.
-Timeline tasks are persisted through the local service in the same SQLite database as Schedule and
-Monitor state. A recurring task is stored once as a series rule; the frontend expands only the
-visible occurrences, so daily tasks do not create an ever-growing set of future database rows.
-
-Monitor samples pass through a frontend adapter that produces current cognitive state, efficiency,
-predicted completion delay, and a six-hour `cognitive_load` / `mental_fatigue` forecast. When the
-native Monitor is unavailable, the UI explicitly labels its synthetic fallback as `DEMO DATA`. Raw
-observations are not displayed.
-
-Start the local server:
+首次安装和构建前端：
 
 ```bash
 npm install --prefix web
 npm --prefix web run build
-./scripts/run-schedule.sh
 ```
 
-Then open [http://127.0.0.1:8765](http://127.0.0.1:8765). The default database is
-`data/chronos.sqlite3`; this directory is ignored by Git.
-
-For UI development with hot reload, run the API and Vite separately:
+浏览器使用：
 
 ```bash
 ./scripts/run-schedule.sh
-npm --prefix web run dev
 ```
 
-The server binds to localhost by default and serves the production build from `web/dist/`.
+打开 [本地 Chronos](http://127.0.0.1:8765)。默认 SQLite 数据库为
+`data/chronos.sqlite3`，服务默认监听 localhost，静态前端来自 `web/dist/`。
+修改前端后需重新构建；修改后端或模型配置后需重启对应服务。
 
-## macOS app shell
-
-The lightweight macOS shell in `apps/mac-app/` hosts the same React interface in `WKWebView`.
-It disables WebKit back/forward trackpad navigation, keeps external links outside the app, and
-exposes a deliberately small `window.chronosNative` bridge for future Monitor integration.
-
-Build the shell and bundle the current frontend:
-
-```bash
-./scripts/build-mac-app.sh
-```
-
-Run it:
+macOS 桌面使用：
 
 ```bash
 ./scripts/run-mac-app.sh
 ```
 
-This single command starts the local Schedule service when needed, opens and activates the macOS
-window, and starts the native macOS Monitor when no live collector is already connected. It stops
-the service and collector processes it started when the app exits. If a Schedule service or Monitor
-is already running, the shell reuses it only when the health response advertises the current
-`adjustment-signals-v1` capability; an incompatible service is isolated on another port. Always use
-this script for a normal launch rather than running the Swift executable directly, because the
-executable does not own or upgrade the Python service. Set `CHRONOS_WEB_URL` to another localhost
-URL, such as Vite on port 5173, for development.
+启动器会构建/打包前端、尝试复用或启动本地服务，并在没有活跃采集时启动 Monitor。
+当前复用主要依赖 capability，不保证已有服务是最新代码；出现“修了但没变化”时先核对运行实例，
+不要反复启动叠加进程。窗口退出后的完整进程清理与后台常驻尚待验收。直接运行 Swift 壳不会管理 Python 服务。
 
-The local service accepts normalized Observation objects at
-`POST /api/monitor/observations`. It exposes interpreted state—not raw keyboard or window events—at:
+开发热更新：在两个终端分别运行 API 与 Vite。
 
-```text
-GET /api/current-state
-GET /api/cognitive-state?from=<epoch-ms>&to=<epoch-ms>
+```bash
+./scripts/run-schedule.sh
 ```
 
-Timeline persistence is exposed at:
-
-```text
-GET    /api/timeline/tasks
-POST   /api/timeline/tasks
-PUT    /api/timeline/tasks/<id>
-DELETE /api/timeline/tasks/<id>
+```bash
+npm --prefix web run dev
 ```
 
-The versioned Schedule API is the canonical frontend boundary. New writes no longer target the
-legacy `timeline_tasks` table; those rows are imported once into Schedule tasks when the local
-service starts. Every task mutation produces and activates a new planner version.
+前端开发配置见 `web/vite.config.ts`。可用 `CHRONOS_WEB_URL` 指向本地开发 URL。
+仅测试原生采集流可运行 `./scripts/run-mac-loop.sh --device-id my-macbook`；
+不要和已经运行的桌面采集器重复启动。
 
-```text
-GET    /api/v1/schedule/timeline
-POST   /api/v1/schedule/tasks
-PUT    /api/v1/schedule/tasks/<id>
-DELETE /api/v1/schedule/tasks/<id>
+## 模型与个人资料
 
-GET    /api/v1/proposals
-POST   /api/v1/proposals
-POST   /api/v1/proposals/<id>/accept
-POST   /api/v1/proposals/<id>/reject
-POST   /api/v1/proposals/<id>/restore
+参考 `config/agent.example.toml` 配置 Git 忽略的 `config/agent.local.toml`；
+可通过 `CHRONOS_AGENT_CONFIG` 或 `--agent-config` 覆盖路径。不要提交密钥。
+无可用模型配置时可运行确定性解释路径，但它不等价于 LLM 的自然语言能力。
+当前生产模型异常还有自动 fallback 路径，这是 P0 待修缺陷，不是推荐的产品行为。
 
-GET    /api/v1/reminders
-POST   /api/v1/reminders
-PUT    /api/v1/reminders/<id>
-DELETE /api/v1/reminders/<id>
+MEMORY SYNC 支持 Markdown 和 ChatGPT/Claude 导出 ZIP，提供候选审核、接受、编辑和遗忘。
+Markdown 模板见 `config/personal-profile-import.example.md`。
+导入原文件保存在 Git 忽略的 `data/agent-imports/`，可用 `--agent-import-dir` 调整。
+目前资料存储/检索组件与 canonical Flow 的使用链路未接通；不要据导入成功推断本轮 LLM 已使用资料。
+`config/agent.local.md` 及旧 profile 注入机制也不能当作新主链已接通的证据。
+
+## 采集权限与数据
+
+macOS 原生采集器汇总输入数量、前台应用/获授权的窗口标题和会话状态，不记录按键内容或完整指针轨迹。
+Input Monitoring 用于全局输入计数，Accessibility 用于窗口标题；权限不足时各采集器独立降级。
+在系统设置的“隐私与安全性”授权后重启采集器。本版本不使用屏幕录制。
+
+状态估计在本地按规则运行，五分钟桶保存在 SQLite；它不是健康诊断或经验证的生产力测量。
+配置、数据库、导入文件和可能包含私人 Prompt 的诊断输出都应留在本地。
+
+## 验证
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests
+npm --prefix web run build
+git diff --check
 ```
 
-V1 responses use a stable envelope with `schema_version`, `request_id`, `data`, and `error`.
-Agent requests first become source-grounded interpretations on the backend. Missing or ambiguous
-title, duration, time, or recurrence fields produce clarification questions instead of guessed
-schedule writes. Resolved requests become typed command batches, including multiple daily or weekly
-series and inclusive recurrence end dates. Shared Chinese modifiers such as “每天” can ground more
-than one task through field-level source fragments without weakening verbatim provenance checks.
-The Schedule planner previews a 14-day horizon and persists an explainable proposal with
-per-date conflicts and plan versions. Explicit clock times are fixed and cannot be silently moved.
-Accepting or restoring a batch updates all task series and plans in one SQLite transaction; no task
-changes before acceptance. The timeline receives planner-generated recurring occurrences from the
-backend rather than expanding recurrence in the browser. Legacy move/resize, delete, and query
-commands remain available through the same replaceable parser boundary.
+本轮工作区：193 项 Python 测试和前端构建通过；含未提交的场景测试，多数语义测试使用静态模型/
+确定性解释器。未调用真实 provider，未验收浏览器点击或原生通知。详细范围见功能调查。
 
-Reminder / Beacon is a separate temporal object for “do not forget” intent. Point reminders render
-as single beacons; window reminders render as a subtle range bracket with a beacon and do not consume
-Schedule time. Agent reminder creation remains confirm-before-write. Context-aware delivery is stored
-as an explicit intent in this version; Monitor-selected interruption timing remains roadmap work.
-Agent reminder recognition uses the configured semantic provider; the deterministic fallback refuses
-Reminder-shaped text rather than silently degrading it into a Task.
+## 文档索引
 
-Agent providers are selected through `config/agent.local.toml` (ignored by Git). The checked-in
-`config/agent.example.toml` contains presets for DeepSeek, OpenAI/OpenAI-compatible APIs, Anthropic,
-and Gemini. DeepSeek is selected by default; with an empty key, Chronos safely uses the local
-deterministic parser. Restart the local service after changing provider configuration. Override the
-path with `CHRONOS_AGENT_CONFIG` or `--agent-config`.
-
-Stable personal context lives in `config/agent.local.md`, which is also ignored by Git. Chronos
-caches its parsed content and checks only the filesystem fingerprint on each Agent request; it
-re-reads and re-hashes the file only after a change. For semantic providers, the profile is placed
-in the stable system-prompt prefix so provider-side prefix caching can reuse it. Keep this file
-concise and use Chronos data sources for frequently changing state. The maximum size is controlled
-by `agent.profile_max_chars` in the TOML configuration.
-
-### Personal context imports
-
-The fastest path is to ask ChatGPT or Claude to describe you as structured Markdown. Open
-**MEMORY SYNC**, click **COPY GPT PROMPT**, send that prompt in a conversation that knows you,
-save the response as a UTF-8 `.md` file, then drag it into Chronos. A normal Markdown document also
-works as long as personal facts are separate bullet or numbered-list items under descriptive
-headings. Sections may be added, removed, or renamed; unknown headings use the generic `personal`
-category. Nested lists retain their parent context, and a whole document wrapped in a
-`markdown` code fence is accepted. The checked-in template is
-`config/personal-profile-import.example.md`.
-
-For deeper history, the same drop zone still accepts ChatGPT or Claude account-export ZIP files.
-Select the source before importing. Chronos retains every original private Markdown, text, or ZIP
-document under the following Git-ignored folders:
-
-```text
-data/agent-imports/chatgpt/
-data/agent-imports/claude/
-```
-
-In this workspace those resolve to:
-
-```text
-/Users/prts/Projects/Chronos/data/agent-imports/chatgpt/
-/Users/prts/Projects/Chronos/data/agent-imports/claude/
-```
-
-Change the root with `--agent-import-dir`. Uploads are limited to 50 MB; ZIP content is limited to
-200 MB uncompressed. Chronos parses Markdown headings and list items locally. For ZIPs, it reads
-`conversations.json` directly without extracting it and uses local rules to propose personal
-statements. Imported source files are never sent to the configured model provider. Re-importing an
-identical file is a no-op. New imports are compared with accepted context and marked as new,
-possible updates, or possible conflicts. Accepted candidates are stored in SQLite. Chronos selects
-only request-relevant accepted items for each semantic Agent request and persists the exact
-`context_used` list on the proposal; ignored candidates are not used as context. Accepted items can
-be edited or forgotten from **MEMORY SYNC**, with local revision records retained for audit.
-
-```text
-POST /api/v1/agent/imports?source=chatgpt|claude&filename=<name.md|name.zip>
-GET  /api/v1/agent/imports
-GET  /api/v1/agent/memory/candidates
-POST /api/v1/agent/memory/candidates/<id>/accept
-POST /api/v1/agent/memory/candidates/<id>/ignore
-GET  /api/v1/agent/memory/items
-PUT  /api/v1/agent/memory/items/<id>
-DELETE /api/v1/agent/memory/items/<id>
-```
-
-Background collection is not yet independent of the desktop window. The current behavior and the
-Octopus-inspired service roadmap are recorded in
-[`docs/roadmap.md`](docs/roadmap.md).
-
-The current five-minute bucket is updated in place in SQLite. The UI reads at most 288 points from
-the past 24 hours. If no Monitor observation has arrived recently, the frontend explicitly switches
-to `DEMO DATA`.
+- [当前功能、完成度与缺陷](docs/feature-audit-2026-09-05.md)
+- [P0–P5 产品路线图](docs/roadmap.md)
+- [当前架构与扩展边界](docs/architecture.md)
+- [认知状态专项设计与实现边界](docs/cognitive-state-estimator.md)
+- [视觉活动理解：未实施设计](docs/visual-activity-understanding.md)
+- [旧路线图归档](docs/archive/roadmap-2026-08.md)
+- [Agent 迁移历史](docs/agent-interaction-audit.md)

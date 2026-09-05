@@ -1,5 +1,10 @@
 # Chronos Agent Interaction System — Phase 0 Architecture Audit
 
+Historical record, retained on 2026-09-05. The Phase notes below mix the original migration contract
+with later progress; they are not the current capability checklist. See the
+[current feature audit](feature-audit-2026-09-05.md), [roadmap](roadmap.md), and
+[architecture](architecture.md). Obsolete type names and execution paths below are historical only.
+
 Status: completed audit, 2026-08-13. This document describes the repository before the Operation
 foundation is introduced. It is a migration contract, not a claim that later phases already exist.
 

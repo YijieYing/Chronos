@@ -1,171 +1,145 @@
 # Chronos architecture
 
-The Agent migration and remaining compatibility deletion are tracked in
-[roadmap.md](roadmap.md). The canonical request path is now forward-only:
+Updated 2026-09-05. This document describes current ownership and extension rules, not a claim that
+every planned capability ships. See the [feature audit](feature-audit-2026-09-05.md) for implementation
+evidence and the [roadmap](roadmap.md) for acceptance gates. The audit includes uncommitted worktree changes.
+
+## Canonical Agent path
 
 ```text
-Prompt -> Parser -> Items -> Interpreter -> Events -> Planner -> Plan
-       -> Lowerer -> Operations -> Runtime -> Schedule / Reminder
+Prompt → Parser → Items → Interpreter → Events → Planner → Plan
+       → Lowerer → Operations → Runtime → Schedule / Reminder
 ```
 
-`AgentOperation` persists the current semantic `Snapshot`, resolved `Plan`, finite Operations, and
-lifecycle state. Proposal and Projection are views of those objects. Proposal no longer stores a
-second executable payload, and canonical Runtime never calls Planner or ProposalService. The old
-proposal-shaped execution path remains only behind methods explicitly suffixed `legacy` while
-unmigrated edit/delete/recurrence cases are moved.
+| Concept | Responsibility | Must not become |
+| --- | --- | --- |
+| Item | Exact Prompt fragment and source anchor; production Parser currently keeps the whole Prompt | An executable command |
+| Event | Meaning produced by Interpreter, including unresolved fields and evidence | Another Plan or provider-specific command |
+| Plan | Planner's resolved result, targets, constraints and conflicts | An API-specific duplicate plan |
+| Operation | Finite executable primitive produced by Lowerer | Unresolved semantic intent |
+| Runtime | Apply/revert authorized Operations and record execution | Another semantic interpreter |
+| Proposal | Review/lifecycle view around the canonical result | A second authoritative executable payload |
+| Log | Append-only interaction/execution view | A planning engine |
+| Projection | Temporary timeline view of proposed changes | Committed Schedule data |
 
-Chronos starts as a modular monolith with three independent domain boundaries. This keeps local
-deployment simple without allowing monitoring, scheduling, and automatic adaptation to collapse
-into one model.
+`AgentOperation` is the existing persisted lifecycle aggregate containing Snapshot, Plan and Operations;
+it is distinct from an executable Operation primitive. Retain existing vocabulary rather than introducing
+Intent, SemanticInterpretation or another synonymous layer.
 
-## Bounded contexts
+Interpreter currently combines one model extraction with normalization into Events. This is a two-layer
+responsibility, not two guaranteed model calls. Some source-text rules currently override valid model fields;
+field-local evidence and stable clarification are P0 work, not already achieved guarantees.
 
-### Monitor
+A semantic Gap blocks execution of the batch. Missing targets can produce structured Plan conflicts.
+Not all unsupported constraints currently become structured conflicts; exception handling and silent
+deterministic fallback still need alignment with the intended clarification/retry policy.
 
-Monitor answers what the user is doing now and what likely happened during a past interval.
-
-It owns observations, collector health, feature windows, work-state estimates, activity segments,
-multi-device presence, and monitor snapshots. It may publish events such as:
-
-- `monitor.work_state_updated`
-- `monitor.activity_segment_finalized`
-- `monitor.collector_degraded`
-
-Monitor does not know about schedule blocks or modify a plan.
+## Domain ownership
 
 ### Schedule
 
-Schedule answers what the user intends to do and when it can be done.
+Schedule owns tasks, constraints, deterministic daily planning, versioned Agendas and backend timeline
+projection. It can operate without Monitor. Daily/weekly series are stored once and projected over a
+bounded horizon; they are not an unlimited set of stored future rows.
 
-It owns tasks, goals, fixed and flexible blocks, constraints, plan versions, calendar projections,
-and explicit schedule commands. It may publish events such as:
+Manual task writes use ScheduleService through the v1 API. Agent writes reach it through Runtime.
+Schedule's Agenda versions are domain scheduling results; they are not an alternative Agent Plan.
+Service mutations can trigger Schedule planning internally. Thus “Runtime does not invoke Agent Planner”
+does not mean execution causes no downstream agenda computation.
 
-- `schedule.plan_created`
-- `schedule.plan_revised`
-- `schedule.block_changed`
+Task completion/actual duration, recurring occurrence exceptions and long-term goals do not yet form
+complete user workflows.
 
-Schedule can operate without Monitor. It does not infer actual behavior and does not automatically
-react to work-state updates.
+### Reminder
 
-The HTTP timeline is a projection of Schedule tasks and activated agenda blocks, not a separate
-write model. The former `timeline_tasks` storage is a migration source only. Recurring occurrences
-are projected by the backend planner over a bounded horizon and retain their series identity for
-editing. User edits still use Schedule commands. Migrated Agent task/reminder creation instead uses
-the canonical Agent pipeline above and reaches Schedule only through Runtime Operations. The former
-`ScheduleCommandParser -> AgentInterpretation -> ProposalService` route is compatibility code, not
-an allowed dependency for new Agent capabilities.
+Reminder owns point/window triggers and reminder state without consuming Schedule capacity.
+It shares task-like selection, property editing and deletion in the UI, but is not a zero-length
+Schedule block. Duration is not a required Reminder field.
 
-Daily and weekly recurrence may include an inclusive `until` date. Interpretation provenance is
-field-level and supports multiple exact source fragments, allowing one grammatical modifier to
-ground multiple tasks while keeping every frequency, weekday, and end-date claim traceable to the
-request.
+CRUD and Beacon rendering exist. Actual notification delivery, retry/receipts and Monitor-selected
+interruption timing do not. Some delivery policy flags reach Plan/Operation but are not durably stored
+in the current Reminder model. Agent reminder updates currently recreate the object and can reset state.
 
-The first Schedule prototype uses a deterministic daily planner over the full 24-hour day. It sorts
-eligible tasks by priority, deadline, and creation time; subtracts fixed constraints; splits tasks
-only when allowed; and records any remainder explicitly. Generated plans are immutable, versioned
-drafts until the user activates one.
+### Monitor
 
-### Reminder / Beacon
+Monitor owns normalized Observations, bounded live aggregation, rule-based WorkState estimates,
+activity segments and CognitiveState points. Native collectors supply input counts, foreground context
+and session signals. Cognitive history is persisted; live activity segmentation is not equivalent to
+a durable record of which scheduled Task the user actually performed.
 
-Reminder is an independent bounded context and SQLite model. It never becomes a short Task or a
-ScheduleBlock and therefore does not reserve planner capacity or contribute to planned cognitive
-load. A point trigger owns one timestamp; a window trigger owns start/end bounds and is rendered as
-a light bracket plus a beacon. Agent-created reminders use the same persisted proposal and explicit
-confirmation policy as Schedule mutations.
+Monitor does not write Schedule. Frontend MonitorAdapter currently generates forecast-like display
+values; there is no authoritative backend Forecast integrated with Agent planning.
+Production multi-device reconciliation and full late-evidence revision remain design work.
 
-The first version stores `exact` and `context-aware` delivery intent. It persists, renders, and confirms
-that intent, but Monitor-driven delivery selection is deliberately deferred; storing the contract
-does not imply that an interruptibility engine already exists.
+### Agent
 
-### Adaptation
+Agent owns the canonical request pipeline, clarification, authorization policy, execution lifecycle,
+Log and Projection. `State` currently carries only now/timezone; target drafts provide selected task/reminder
+data, while the model-facing object index is limited. Accepted Memory/Profile is not yet wired into
+canonical model requests. Neither general state-aware planning nor reliable grounded schedule queries
+should be inferred from the existence of those components.
 
-Adaptation compares intent from Schedule with evidence from Monitor and decides whether intervention
-is worthwhile.
+The adjustment engine detects and records selected passive signals without producing executable
+schedule adjustments. Registry persistence exists but production Flow does not capture failures into it.
+There is no separate implemented `adaptation/` domain directory; future proactive behavior should reuse
+Agent Plan/Operations/Runtime rather than create a competing execution pipeline.
 
-It owns deviation detection, candidate adjustments, risk and authorization policy, prompt cooldowns,
-user feedback, proposal explanations, and execution decisions. A proposal can be suggestion-only,
-require confirmation, or be eligible for automatic execution. Notification delivery remains a port,
-so policy is independent from macOS notifications or a future mobile UI.
+## Runtime and authorization boundaries
 
-Adaptation may consume Monitor and Schedule events and issue validated Schedule commands. Monitor and
-Schedule never import Adaptation.
+Interpretation/clarification and review do not themselves authorize arbitrary writes. The autonomy gate
+can authorize eligible actions; other actions require confirmation. Runtime owns before/after records,
+application and compensation. The v1 boundary marks overlapping proposals stale after timeline changes.
 
-## Dependency direction
+Current limitations:
 
-```text
-Monitor events ─────┐
-                    ├──> Adaptation ──> Schedule commands
-Schedule events ────┘          │
-                               └──> Prompt/notification port
-```
+- Cross-repository execution is not one crash-atomic SQLite transaction.
+- Undo does not fully protect against subsequent object edits.
+- Full task updates can default fields missing from TaskDraft.
+- Stale proposals currently require resubmission rather than automatic safe recompilation.
+- Automatic execution does not reliably refresh every committed frontend object view.
 
-An in-process event dispatcher is sufficient initially. Domain event contracts should remain plain,
-versioned data so they can later cross a process boundary without redesigning the domains.
+These are P0/P4 acceptance work. Do not describe all writes as confirm-only, all Undo as conflict-safe,
+or all batches as atomically committed until those stronger contracts are implemented and tested.
 
-## Target source layout
+## Current source layout
 
 ```text
 src/chronos/
-├── monitor/
-│   ├── models.py
-│   ├── observations.py
-│   ├── aggregation.py
-│   ├── estimator.py
-│   ├── segments.py
-│   ├── snapshots.py
-│   ├── live.py
-│   ├── serialization.py
-│   ├── events.py
-│   └── ports.py
-├── schedule/
-│   ├── models.py
-│   ├── constraints.py
-│   ├── planner.py
-│   ├── commands.py
-│   ├── events.py
-│   └── ports.py
-├── adaptation/
-│   ├── models.py
-│   ├── deviation.py
-│   ├── reconciler.py
-│   ├── policy.py
-│   ├── prompts.py
-│   └── ports.py
-├── infrastructure/
-│   ├── persistence/
-│   ├── event_bus.py
-│   └── integrations/
-└── api/
-    ├── cli.py
-    └── http.py
+├── agent/           # Canonical pipeline and interaction lifecycle
+├── schedule/        # Schedule domain; also contains remaining legacy Agent helpers
+├── reminders/       # Reminder domain
+├── monitor/         # Observation and state estimation
+├── infrastructure/  # Persistence and adapters
+└── api/             # Local HTTP and CLI composition
+
+apps/mac-agent/      # Native Observation producer
+apps/mac-app/        # WKWebView shell, not a domain engine
+web/                # UI and read-model consumers
 ```
 
-The native macOS collector remains under `apps/mac-agent`; it is an external adapter that speaks the
-Monitor Observation contract, not part of the Schedule domain.
+Legacy semantic/parser/proposal components remain in `schedule/`, and Runtime still imports helper
+functions from `schedule/proposals.py`. Production composition constructs an old memory-aware parser
+without using it for canonical requests. The old semantic/proposal execution route is not the primary
+path, but “all legacy code deleted” is not an accurate repository status.
 
-The thin desktop shell under `apps/mac-app` hosts the React frontend in `WKWebView`. It owns window
-behavior, navigation policy, resource loading, and the native bridge, but no Monitor or Schedule
-business logic.
+Any further compatibility work must identify the exact surviving dependency, its replacement and deletion
+phase. P0 should remove obsolete composition and consolidate required helpers under their real owner
+when touched; do not revive legacy parsing to implement a new capability.
 
-The initial package does not need every file in this target tree. Directories should appear when the
-corresponding behavior exists. Avoid a generic `shared` domain folder: identifiers, clocks, and event
-envelopes may be shared infrastructure, but tasks, work states, and adjustment proposals retain a
-single owning context.
+## Extension rules
 
-## Monitor output
+1. Add user scenarios and acceptance fixtures before expanding schema. Reuse existing Item/Event/Plan
+   vocabulary and define field provenance, uncertainty and clarification behavior.
+2. Extend read-only State/drafts for grounded queries, actual records and accepted context. Distinguish
+   user statements, observed evidence and predictions; attach freshness/source.
+3. Add a new Operation only for a genuinely new executable primitive. Its authorization, stale scope,
+   persistence, idempotency, failure compensation and Undo must be specified together.
+4. Keep notification delivery outside semantic interpretation; evaluator and adapters consume durable
+   Reminder state and write delivery receipts.
+5. Route proactive adjustments through the same Planner and Runtime. New evidence is not permission.
+6. External integrations and optional vision remain adapters with explicit user consent. Raw observations,
+   imported documents and model output must never become unvalidated write authority.
 
-Collectors continue to publish independent Observations at their natural cadence. A materialized
-snapshot provides a convenient external view without merging collector implementations:
-
-```text
-independent Observations
-        -> SnapshotAssembler
-        -> DeviceObservationSnapshot
-        -> independent inference modules
-        -> WorkStateSnapshot
-        -> MonitorSnapshot
-```
-
-Every module reports its own status, timestamp, schema version, data, and—when applicable—confidence
-and model version. Consumers ignore unknown modules, allowing location, project activity, calendar
-context, and remote-device presence to be added compatibly.
+No code module/type names were added, replaced or deleted in this documentation round. The current
+documentation removes obsolete claims that Adaptation is an implemented directory or that legacy
+command/proposal models remain the canonical Agent path. Historical terms remain in archived designs.

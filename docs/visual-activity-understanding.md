@@ -1,5 +1,11 @@
 # Visual activity understanding
 
+Status, 2026-09-05: proposed, not implemented. Current macOS collectors do not capture screen images.
+This is an optional P5 enhancement, not a dependency for core task or notification functionality.
+See the [roadmap](roadmap.md) and [current architecture](architecture.md).
+References below to future Adaptation describe a policy responsibility, not a new required domain/module;
+any resulting adjustment must reuse the canonical Agent Plan/Operations/Runtime path.
+
 ## Goal and boundary
 
 Visual understanding should improve Monitor's estimate of current activity and possible Schedule

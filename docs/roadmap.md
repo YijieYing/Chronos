@@ -1,494 +1,174 @@
-# Chronos roadmap
-
-This document is the single backlog for valuable capabilities that should be remembered but are
-not part of the current implementation. Each item should state its current limitation, intended
-outcome, and delivery checkpoints. Completed work should move to release notes or architecture
-documentation instead of remaining here.
-
-## Deferred runtime performance
-
-Functionality is being stabilized before this work starts, but these confirmed issues must not be
-lost:
-
-- Make the macOS Monitor bridge a singleton. Repeated `run-mac-app.sh` launches currently leave
-  duplicate `monitor_runner` / `chronos-mac-agent` pairs that reconnect after Schedule restarts.
-- Make launcher cleanup reliable across signals, independently launched shells, and backend
-  replacement; health capability equality is not sufficient to prove process ownership or code
-  freshness.
-- Reduce continuous WKWebView rendering. Per-task infinite waveform animation, Ambient Wave, NOW
-  pulse, reminder breathing, and large backdrop blurs currently keep WebKit GPU/WebContent active.
-- Pause decorative animation while the app is hidden or inactive, honor `prefers-reduced-motion`,
-  and prefer one shared low-frequency animation clock over one animation per timeline object.
-- Add a repeatable idle CPU/GPU/process-count check for one Schedule service, one Monitor bridge,
-  one native collector, and one app window.
-
-## Agent understanding and planning pipeline
-
-### Agreed architecture
-
-Chronos will migrate to one forward-only pipeline. Each stage consumes primarily the structured
-output of the previous stage and must not repeat that stage's responsibility:
-
-```text
-Prompt
-  -> Parser
-  -> Items
-  -> Interpreter
-  -> Events
-  -> Planner + State
-  -> Plan
-  -> Lowerer
-  -> Operations
-  -> Gate
-  -> Runtime
-  -> Schedule / Reminder domain
-
-Monitor + Timeline + Forecast + Profile
-  -> Estimator
-  -> State
-```
-
-Proposal, Projection, and Log are lifecycle views around this pipeline. They must not own a second
-semantic model, planning payload, or executable truth. Runtime executes only the finite Operations
-produced by Lowerer; it does not interpret language, call Planner, or reconstruct planning objects
-from lower-level operations.
-
-### Contract map
-
-The following contracts are the implementation checklist for the diagram above. “Reads” is a
-deliberate visibility boundary: a layer should not receive earlier raw data merely because it is
-convenient.
-
-#### Prompt
-
-- **Contains:** one immutable user submission, its id, original text, timestamp, selection, and
-  Operation id.
-- **Read by:** Parser. Selection is also available to Interpreter as bounded reference context.
-- **Must not become:** the semantic source of truth after Events exist.
-
-#### Parser
-
-- **Reads:** Prompt text and nothing from Schedule, Monitor, Profile, or executable Operations.
-- **Produces:** ordered Items whose spans point into the exact Prompt, or one source-span-anchored
-  Boundary clarification.
-- **Owns:** segmentation only.
-- **Must not:** infer titles, kinds, requests, time, duration, relations, priority, or planning
-  actions; rewrite source text; publish partial Items while a Boundary clarification is pending.
-
-#### Item library
-
-The canonical minimal Item is:
-
-```text
-Item {
-  id
-  prompt_id
-  span { start, end }
-  text
-}
-```
-
-- `text` must equal the exact Prompt slice at `span`.
-- Items preserve language evidence; they are not task drafts.
-- One Item may later produce multiple Events. Multiple Items may later be combined into one Event.
-
-#### Interpreter
-
-- **Reads:** Items, current selection, clarification answers, and a minimal object index needed to
-  resolve references. It does not receive Monitor, Forecast, a complete Schedule plan, or Runtime
-  state by default.
-- **Produces:** a complete new snapshot of Events and Directives, including source evidence,
-  provenance, Gaps, and Residue.
-- **Owns:** linguistic meaning—what each Item describes, whether it is a timeline Event or a
-  Directive, Event kind, semantic add/edit/delete request, time expression, duration, reference,
-  and relation.
-- **Must:** return a typed result for every Item, even when that result is unknown or contains
-  Residue.
-- **Must not:** choose a concrete available slot, optimize the Schedule, emit executable
-  Operations, or silently invent unsupported meaning.
-
-#### Event library
-
-The first Event vocabulary is:
-
-```text
-Event {
-  id
-  item_ids[]
-  content[]       // exact Item-backed fragments
-  kind            // task | reminder | state | schedule | unknown
-  request         // add | edit(target, fields[]) | delete(target)
-  time
-  duration?
-  references[]
-  relations[]
-  gaps[]
-  residue[]
-  provenance[]
-}
-```
-
-- Event is semantic, not executable. `request: edit` is what the user wants changed; it is not an
-  UpdateTaskOperation.
-- Event content remains source-backed. Display text may be deterministically composed from several
-  content fragments, but the model does not replace them with a new title.
-- An Event may be partial when its uncertainty is explicitly represented by Gap or Residue.
-- Combining “A and B count together” produces one Event with both content fragments and the
-  established duration. It does not create shared-duration schema or a merge Operation.
-
-#### Time library
-
-```text
-Time =
-  none
-  | period(morning | afternoon | evening, precision)
-  | point(timestamp, precision)
-  | range(start, end, precision)
-  | flexible(optional period)
-  | relative(relation_id)
-  | unresolved(source text)
-```
-
-- `none` means the user expressed no time.
-- `unresolved` means the user did express time but Interpreter could not represent it safely.
-- Approximation is precision on a known time shape, not a synonym for missing or unresolved.
-- Relative time links to a semantic Relation; Planner resolves it to concrete time later.
-
-#### Gap
-
-- **Means:** Interpreter understands the semantic shape but a specific expressed fact is ambiguous,
-  conflicting, or unresolved—for example which of three “Research” tasks a relation targets.
-- **Contains:** Item anchor, optional Event anchor, affected semantic field, reason, candidates when
-  available, and a candidate question.
-- **Does not mean:** every optional field that the user omitted. Missing duration is not
-  automatically a Gap merely because a database model wants a number.
-- **Consumed by:** Planner, which decides whether the uncertainty materially blocks planning and
-  centrally emits clarification when required.
-
-#### Residue
-
-- **Means:** an exact source fragment that the current Event vocabulary or Interpreter version
-  cannot safely express.
-- **Contains:** Item anchor, source span/text, typed reason, optional capability hint, Interpreter
-  version, and eventual handling outcome.
-- **Consumed by:** Planner only to decide whether to continue with an explicit assumption, ask an
-  Item-anchored clarification, or return a typed capability failure.
-- **Must not:** be silently reinterpreted by Planner and written back as Event fact.
-- **Recorded in:** the capability-gap registry for review, regression fixtures, and future Updater
-  work.
-
-If an Interpreter fallback is needed, it remains owned by Interpreter:
-
-```text
-Item -> Interpreter -> Interpreter fallback -> Event / Residue -> Planner
-```
-
-The forbidden alternative is `Residue -> Planner as a second Interpreter -> rewritten Event`.
-
-#### Directive library
-
-- **Represents:** a non-timeline conversational request such as query, explanation, replan request,
-  information, or unknown input.
-- **Produces:** a first-class Chronos Log response with optional clickable Timeline references.
-- **Must not:** create an executable Operation solely to display a reply.
-
-#### Estimator
-
-- **Reads:** Monitor evidence, committed Timeline, Forecast, Profile, freshness, and confidence.
-- **Produces:** State.
-- **Owns:** interpretation of the user's changing condition, not interpretation of Prompt language.
-- **Must not:** create Events, Plans, or Operations.
-
-#### State library
-
-- **Contains:** the smallest current user/schedule facts Planner needs, each with confidence,
-  freshness, and source where relevant.
-- **Examples:** current time, activity, focus/load estimate, interruptibility, active task,
-  availability, and forecast risk.
-- **Must not:** merge raw Monitor streams with Prompt semantics or pretend uncertain estimates are
-  user-confirmed facts.
-
-#### Planner
-
-- **Reads:** Events, Directives that require planning, State, and a bounded Schedule view. It
-  normally does not read Prompt.
-- **Produces:** exactly one Plan snapshot containing resolved changes, concrete timing, conflicts,
-  assumptions, explanations, horizon, and source Event references.
-- **Owns:** constraint resolution, slot choice, prospective/historical horizon, relations, fixed
-  constraints, planning objectives, and centralized post-Parser clarification decisions.
-- **May inspect Residue only to choose:** explicit assumption, clarification, or typed failure.
-- **Must not:** rewrite Event facts, redo general language interpretation, emit Runtime-specific
-  payloads, or accept Operations as input.
-
-#### Plan library
-
-- **Is:** the single resolved planning truth between Events and Operations.
-- **Contains:** concrete task/reminder drafts or changes, resolved timing and relations, conflicts,
-  assumptions, explanation, planning horizon, source Event ids, and version/concurrency basis.
-- **Feeds:** Proposal text, Timeline Projection, Lowerer, and Gate metadata.
-- **Must not:** coexist with a proposal-only execution payload containing different changes.
-
-#### Lowerer
-
-- **Reads:** Plan only.
-- **Produces:** the registered finite Operations union.
-- **Owns:** deterministic conversion from resolved changes to Runtime primitives.
-- **Must not:** read Prompt, call a model, choose slots, ask clarification, or raise Operations back
-  into Events/Plan.
-
-#### Operations library
-
-- **Is:** the only executable representation accepted by Runtime.
-- **Contains:** finite, registered, strictly validated primitives such as create/update/delete of
-  Task or Reminder.
-- **Must not:** contain symbolic time, unresolved semantics, model-invented operation names, or
-  proposal-specific hidden payloads.
-
-#### Gate
-
-- **Reads:** Plan/Operation risk metadata, ambiguity, impact, reversibility, concurrency state, and
-  Autonomy policy.
-- **Produces:** propose, direct execute, or reject/clarify decision.
-- **Must not:** change the Plan or create alternate Operations.
-
-#### Runtime
-
-- **Reads:** an approved AgentOperation and Operations only.
-- **Owns:** final validation, prospective-past guard, optimistic concurrency, transaction, domain
-  writes, rollback, Log lifecycle entries, and Undo snapshot.
-- **Must not:** call Planner, understand Prompt/Event, reconstruct Tasks for replanning, or execute a
-  legacy Proposal payload instead of Operations.
-
-#### AgentOperation and views
-
-- **AgentOperation:** lifecycle envelope for the current Items/Events/Plan/Operations snapshot,
-  clarification state, version, risk, and status. It does not introduce another semantic model.
-- **Proposal:** `AgentOperation.state = proposed` plus a confirmation view of the same Plan and
-  Operations.
-- **Projection:** spatial view derived from that same Plan/Operations; it remains visible when Log
-  is folded.
-- **Log:** append-only human-readable lifecycle and Directive replies, with references back to the
-  same objects.
-- Proposal, Projection, and Log must never become independent sources of executable truth.
-
-### Ready to implement next
-
-These changes have agreed semantics and can begin without another product-design round:
-
-1. Add characterization tests for the current Prompt-to-Runtime path and architecture-boundary
-   tests that forbid lower-to-higher reconstruction.
-2. Define the minimal Parser, Item, Event, Request, Time, Gap, Residue, Provenance, Directive, and
-   State contracts using the canonical short names above; identify the legacy types each replaces.
-3. Implement exact-span Parser output and tests proving Parser does not infer Event fields.
-4. Implement the first Interpreter slice for task/reminder `add`, `edit`, and `delete`, symbolic
-   periods, concrete ranges, flexible/relative/absent/unresolved time, and Item-anchored gaps.
-5. Persist Residue capability gaps and add a review/export command plus regression fixtures.
-6. Route clarification answers back through Interpreter to produce full Event snapshots; remove
-   field-filling behavior from the migrated slice.
-7. Establish one Plan output and one deterministic Lowerer path for the first vertical case:
-   “下午安排半小时日语”. Runtime must receive only Operations.
-8. Migrate “A 和 B 算在一起，总共一小时” through combined Event content, without a merge
-   operation or a second proposal payload.
-9. Render Directive answers in Chronos Log, including clickable object and time-range references.
-10. For every migration phase, report types added, replaced, and deleted, plus any explicit compat
-    path and its removal checkpoint.
-
-### Migration status (2026-08-16)
-
-Completed on the canonical path:
-
-- Contracts for Parser, Items, Events, Gap, Residue, Directive, State, Plan, Lowerer, Operations,
-  Runtime, and persisted AgentOperation snapshots.
-- Exact-span parsing, versioned Interpreter snapshots, full semantic clarification continuation,
-  and persistent Residue registry.
-- Task creation for symbolic periods, combined Item content (`A · B`) with one total duration, and
-  point/window/context-aware Reminder creation.
-- `Plan -> Operations -> Runtime` task/reminder execution, prospective NOW guard, transactions,
-  rollback, undo, Log events, and Proposal/Projection views derived from canonical state.
-- Existing `/api/v1/proposals` create/clarify/accept entry points switch to the canonical Flow when
-  a configured language model is available. Directive replies bypass Planner and appear in Log.
-- Schedule-domain `Plan` was renamed `Agenda`; Agent `Plan` is now the only planning-result name.
-- ProposalSnapshot no longer owns Operations. Runtime's former ProposalService execution methods
-  are isolated as `execute_legacy` and `revert_legacy`.
-
-Still to migrate before deleting compatibility code:
-
-- Semantic and planning support for edit/delete, recurrence, selected object/range context,
-  relative time, historical recording, and broad replanning.
-- Gate/autonomy execution in canonical Flow; current migrated requests remain proposals.
-- Canonical stale/recompile behavior and Plan-based projection for non-create changes.
-- Removal of `LLMChronosCompiler`, `AgentInterpretation`, proposal Task reconstruction,
-  ScheduleCommandBatch Agent routing, and ProposalService execution duties after parity tests pass.
-- Rename legacy SQLite/wire `plans` and `plan_id` only through an explicit storage/API migration;
-  they currently refer to Schedule Agenda compatibility data.
-
-### Later rounds
-
-These require more design or depend on the first vertical slices:
-
-1. Settle the detailed Event dimensions beyond the initial request/time vocabulary, including
-   recurrence, priority, rigidity, cognitive properties, long-term planning, and reminder policy.
-2. Expand Estimator and State contracts for Monitor evidence, current activity, predicted cognitive
-   load, uncertainty, and freshness without exposing unnecessary raw data to Planner.
-3. Support broader edit and replanning cases, multiple related Events, historical recording,
-   deadlines, preferences, and constraint-aware changes while keeping the same forward-only path.
-4. Move Proposal, Projection, and Log completely onto Event/Plan/Operations references, then remove
-   legacy proposal execution payloads, task reconstruction, and duplicated state.
-5. Add capability dashboards and quality metrics for Residue rate, clarification rate, unsupported
-   concepts, false assumptions, and coverage by Interpreter version.
-
-### Long-term automation
-
-Introduce an **Updater** only after the Residue registry and manual improvement loop are stable.
-Updater will cluster recurring capability gaps, propose Event vocabulary or Interpreter changes,
-generate candidate fixtures, and present a reviewable patch. It must not modify production schemas,
-prompts, or Interpreter behavior autonomously. Human approval, versioning, evaluation, and rollback
-remain required.
-
-Updater is an offline development loop, not another stage in the request-time pipeline:
-
-```text
-Residue registry
-  -> Updater
-  -> reviewed Interpreter change
-  -> regression suite
-  -> versioned release
-```
-
-### Architecture invariants
-
-- Raw Prompt is visible to Parser; Item text is visible to Interpreter. Planner normally receives
-  Events rather than the full Prompt.
-- Interpreter owns language meaning; Planner owns scheduling decisions.
-- Event facts and Plan assumptions are never stored as the same truth.
-- Data moves only toward more concrete representations: Items -> Events -> Plan -> Operations.
-- Operations are never reconstructed into Events or Planner input on the primary path.
-- Proposal, Projection, and Log reference the same Event, Plan, and Operations owned by an
-  AgentOperation.
-- An unsupported phrase becomes Residue, clarification, or a typed failure—not an invented
-  executable operation.
-
-## Context-aware Reminder delivery and object conversion
-
-### Current limitation
-
-Reminder / Beacon supports point and window triggers, exact/context-aware delivery intent, timeline
-and Overview markers, and Agent proposals. The first version does not yet use Monitor signals to
-select an actual delivery instant inside a window. It also does not aggregate dense reminders or
-convert between Task and Reminder.
-
-### Intended outcome
-
-- Select a natural interruption point from task completion, focus decline, recovery state, low
-  cognitive load, and absence of fixed work.
-- Add an explicit interruptibility threshold and an auditable reason for the selected delivery time.
-- Aggregate dense Overview beacons without turning them into calendar blocks.
-- Convert Reminder ↔ Task while preserving title, temporal information, and Chronos Log history.
-
-### Delivery checkpoints
-
-1. Add Monitor-driven reminder evaluator and idempotent delivered events.
-2. Add interruptibility policy, cooldowns, delivery explanation, and notification adapter.
-3. Add Overview aggregation and reminder status controls.
-4. Add reversible Task / Reminder conversion commands and UI.
-
-## Background monitoring independent of the UI
-
-### Current lifecycle
-
-Chronos monitoring is currently owned by the desktop app launcher. `scripts/run-mac-app.sh`
-starts the Schedule API and monitor collector as child processes and its exit trap terminates the
-processes it started. Closing Chronos therefore stops new observations. Existing observations stay
-in SQLite and remain available on the next launch.
-
-While the collector is running it can record session, screen-sleep, system-sleep, and wake
-boundaries. A physically sleeping Mac cannot observe user activity; the meaningful future promise
-is continuous collection while the UI is closed, locked, or idle, plus an explicit gap bounded by
-sleep and wake events.
-
-### Intended outcome
-
-This is a planned capability, not implemented yet.
-
-- Split the local Schedule/Monitor service lifecycle from the Chronos window lifecycle.
-- Follow Octopus's proven service pattern: detached process, PID file, startup lock, bounded logs,
-  process-identity-safe stop, health probing, and restart recovery.
-- For a production macOS install, supervise the collector at login with `SMAppService` or a
-  per-user LaunchAgent instead of relying only on a shell-owned daemon.
-- Keep a local append-only observation buffer in the collector and replay it idempotently when the
-  API becomes available, so a service restart does not create a data hole.
-- Emit explicit `sleep`, `wake`, `screen_locked`, and `screen_unlocked` boundaries and represent
-  physical sleep as an unknown gap rather than invented activity.
-- Preserve local-only storage, permission visibility, retention limits, and a clear pause/quit
-  control before enabling background collection by default.
-
-### Delivery checkpoints
-
-1. Extract start/status/stop commands for the local service and add identity-safe PID/lock/log
-   management.
-2. Add collector buffering and idempotent observation ingestion.
-3. Add login supervision and a UI control that distinguishes closing the window, pausing capture,
-   and fully quitting the background service.
-4. Test app-close, screen-lock, sleep/wake, API restart, and machine restart scenarios.
-
-## Personal context and memory sync for Chronos Agent
-
-### Current limitation
-
-The Agent now loads a Git-ignored personal Markdown profile through a content-hash cache. It accepts
-GPT/Claude-generated Markdown profiles and ChatGPT/Claude export ZIPs, retains them locally, parses
-them without model upload, and presents reviewable candidates. Imports flag possible updates and
-conflicts; accepted items can be edited or forgotten. Request-time local retrieval selects relevant
-accepted memories and proposals persist the exact context used. The Agent does not yet synchronize
-directly from Codex, ChatGPT, Claude, Octopus, or other live sources.
-
-### Intended outcome
-
-- Keep dynamic memory separate from the Markdown profile: store versioned facts and summaries with
-  source, timestamp, confidence, sensitivity, and optional expiry.
-- Retrieve only context relevant to the current request instead of sending the complete personal
-  history to an external model on every call.
-- Add import/export and synchronization ports so Codex/ChatGPT-reviewed summaries, notes,
-  calendars, Schedule, Monitor summaries, and selected Octopus sources can contribute context
-  without becoming one untraceable database.
-- Let the user inspect, correct, forget, pause, or exclude any memory source. Never infer a durable
-  personal fact from one observation without confirmation.
-- Keep raw activity local by default; external providers receive only the minimum selected context
-  needed for the current command.
-
-### Delivery checkpoints
-
-1. Expose a reverse-sync MCP/App tool so ChatGPT, Codex, or Claude can submit reviewed candidate
-   memories to Chronos from inside an authenticated conversation without sharing account cookies.
-2. Keep provider OAuth adapters behind a capability interface. Enable direct account sync only when
-   a provider publishes an authorization scope and API for conversations or memories; ordinary
-   “Sign in with ChatGPT” identity is not treated as data access.
-3. Add opt-in adapters for Schedule, Monitor summaries, notes, calendar, Codex/ChatGPT exports, and
-   Octopus imports.
-4. Add stronger conflict resolution, retention controls, redaction, encrypted-at-rest options, and
-   reversible restore for edited or forgotten context.
-
-### Provider account constraints
-
-- Do not scrape ChatGPT or Claude web interfaces, reuse browser cookies, automate MFA, or store
-  consumer-session tokens.
-- ChatGPT and Claude account exports are asynchronous user-controlled archives today, so archive
-  import is a refresh workflow rather than continuous OAuth polling.
-- Store a source cursor/hash and show only additions, changes, contradictions, and possible removals
-  since the last accepted import. Never turn an imported chat directly into durable memory.
-
-## Backend Forecast and observed-task identity
-
-Phase 12 routes reliable Schedule and Monitor evidence into passive Agent Operations, but the
-current Forecast remains a frontend visualization calculation. Before enabling `task_overrun`,
-`schedule_drift`, or automatic replanning:
-
-1. Persist Monitor's observed/current task identity with confidence instead of retaining only a
-   broad activity type in CognitiveState.
-2. Move predicted task end and overrun confidence behind a versioned backend Forecast contract.
-3. Compare committed Schedule blocks with observed task intervals to emit evidence-backed drift and
-   overrun signals.
-4. Replace the passive replan compiler with a replanning compiler that produces strict IR and sends
-   it through Autonomy Gate, Proposal/Projection, Runtime, and Undo.
-5. Keep proactive Log/UI presentation separately opt-in; signal capture must continue when the Log
-   is folded or the UI is not running.
+# Chronos 产品路线图
+
+更新：2026-09-05。本轮是调查与规划，不是功能发布。实现证据、完成度和缺陷编号见
+[功能调查](feature-audit-2026-09-05.md)；旧架构迁移记录保留在
+[历史路线图](archive/roadmap-2026-08.md)。本文件取代旧文档中的“下一步”。
+
+## 目标与当前位置
+
+最终目标是本地优先的“个人日程和状态管理助手”：理解想做的事，安排可行的时间，
+提醒和记录实际执行，结合用户确认的状态与偏好提出调整，并逐渐支持长期目标。
+不是仅把自然语言转换为日历，也不是根据键鼠活动擅自判断用户是否完成任务。
+
+当前主链 `Items → Events → Plan → Operations → Runtime` 已建立；基本手动 CRUD、
+提案/日志、日内排程和规则状态估计可复用。整体处于 **P0：产品可靠性收尾**，
+尚未完成“每天放心使用”的验收。下一轮应先做 P0，不继续扩大词语补丁或新增架构同义层。
+
+| 阶段 | 用户获得的能力 | 前置条件 / 完成门槛 |
+| --- | --- | --- |
+| P0 可靠操作闭环 | 人话输入、澄清、确认、编辑、撤销都不会悄悄改错 | 跨层回归、错误可解释、前端与持久化一致 |
+| P1 日常执行管理 | 安排今天、开始/完成、补记和回顾实际执行 | P0；计划与实际分离，重复实例可独立记录 |
+| P2 提醒与后台 | 到时能收到提醒，关闭窗口仍能运行 | P0；投递回执、恢复策略、唯一进程和资源预算 |
+| P3 状态与个人上下文 | 了解自己的节奏，得到可解释的安排建议 | P1 的实际记录；上下文授权、预测校准 |
+| P4 主动协助 | 偏离计划时提供可撤销的调整建议 | P2 生命周期 + P3 可信状态；冷却、去重、授权 |
+| P5 长期个人助手 | 把目标变成周计划，结合外部日历持续复盘 | 前述闭环；外部权限、数据治理和效果评估 |
+
+P1、P2 在 P0 通过后可按需求排序；最小通知投递不必等待个性化预测。
+阶段不以新增类的数量或单测总数完成，而以真实用户场景验收。暂不承诺工期。
+
+## 不再反复讨论的产品原则
+
+- 提醒在交互上是一类待办事项，共用选择和属性面板；领域里继续用 `Reminder`，不伪造成
+  有时长的 `Task`，不占排程容量、不询问任务时长。
+- Interpreter 保留两层职责：LLM 理解人话形成候选意义，归一化/校验形成可用 Event。
+  schema 可以表达更完整的意义，但不能靠放宽类型绕过确定性、证据和可执行性检查。
+- 最终语义里任一影响执行的字段缺失、矛盾或不确定，都形成 Gap 并 clarification，整批不执行。
+  不要求把所有可选字段都问一遍；无关字段不产生 Gap。模型输出格式不能解析时，有限修复后仍失败则
+  保留输入并进入可恢复的 clarification，不能静默切换成另一种语义执行。
+- 服务断网、认证或超时属于技术失败：说明原因、保留输入、允许重试，不伪装成“请再说一次时间”。
+  可恢复但语义不完整的结果进入 clarification；澄清答案只修订有关字段。
+- 标题是自然的任务名称，不是整句 Prompt 的截取；原文证据独立保留。
+- 用户明确表达的日期、钟点、时区、时长和重复边界优先受保护；出现解释冲突就问，不用整句规则覆盖正确字段。
+- 对未授权或不确定的动作不写入。策略允许的自动执行仍走 Gate/Runtime，并必须即时显示执行结果和可用撤销。
+- 默认本地优先；事实、估计和预测分别标记。活动信号不能独自证明任务完成或用户健康状态。
+
+## P0 · 先把现有能力做可靠
+
+### P0.1 语义和澄清（B01–B04、B10）
+
+为 Event/字段建立准确的原文范围、稳定身份及字段来源；一个 Item 可以有多个 Event，
+不能让每个 Event 都用整条原文的第一个时间。先修日期/钟点联合归一化，再处理 recurrence
+首次日期、inclusive until、取消重复和多 Event 共享修饰语。相对移动解析方向与偏移量，
+不固定为 20 分钟。对不支持的约束给结构化 conflict/clarification，不猜结果。
+
+取消生产语义失败的静默 fallback；保留明确标识的离线演示模式。澄清保留已确定的字段，
+只有成功解析并验证的答案才消除 Gap。增加受控诊断：请求 ID、模型/配置版本、脱敏字段来源、
+归一化前后差异和失败类别；原始 Prompt/响应默认不进入公开仓库，诊断留存需有开关和删除机制。
+
+验收：同一场景通过静态模型、API、前端及显式启用的真实 provider 检查；包括“半小时”、
+“晚上1点”、明确日期、多 Event 不同钟点、持续一周且今天时间已过、取消重复、标题含“提醒”字样、
+无效 JSON、回答无效、部分回答、模型重排 Event。无新歧义的有效答案应收敛，不能重复问已解决的问题。
+
+### P0.2 执行保真与界面一致（B06–B08）
+
+补齐只读 Draft 到 Operation 的字段保真，避免改标题覆盖 task_type、强度、提醒状态等；
+明确批量写入失败补偿及崩溃恢复边界，Undo 检查后续修改，不覆盖更新的数据。
+自动执行和澄清后执行刷新 Task、Reminder、Log 和 Projection；错误可见，所有呈现的 Undo 都可用。
+
+统一 Task/Reminder 单击选择、双击编辑、面板删除；命中区域考虑 x/y 和对象层级。
+空白双击回到当前时间与单击创建互斥，不能遗留延迟创建；Overview 和主时间轴保持一致的对象定位/选择。
+
+验收：手动/Agent 创建、标题编辑、时间编辑、删除、Undo 都逐字段比对数据库；覆盖提醒已完成状态、
+重复任务、自动执行、刷新重开、批量中途失败及 Undo 前对象被再次编辑。
+真实浏览器/原生壳验收密集提醒、不同缩放和滚动位置，不以 build 代替点击测试。
+
+### P0.3 可复现的交付（B09、B12）
+
+启动页/health 暴露运行版本与模式，启动器区分“有同一 capability”与“运行当前代码”。
+统一演示端口和隔离数据库，不对用户数据库运行 reset。建立前端交互回归及可选真实 LLM 评测，
+记录模型、时区、固定时钟和样本结果；CI 的静态模型测试与真实模型评测分开报告。
+
+保留性能整改事项，先验证功能；但重复采集器/监听器的生命周期测试应纳入 P0。
+P2 常驻前必须测量 CPU、内存、轮询和动画开销，不能把电脑发热简单归因给 LLM。
+
+P0 出口：上述关键场景无已知错误写入、静默降级或无限澄清；所测试源码可从干净 checkout
+复现，版本与运行实例一致，未解决限制明确列出。193 项现有单测通过不等于已达到此门槛。
+
+## P1 · 从排程进入日常执行
+
+新增用户主动标记开始、暂停、完成、重新打开、补记实际耗时；保留计划而不是改写历史。
+先解决重复任务的 series/occurrence 身份及状态归属，再实现“只改这一次/后续/整个系列”。
+提供无具体时间的收集入口、今日清单、未完成整理、任务与提醒转换；转换必须说明字段和历史保留规则。
+补充密集提醒聚合和展开列表，让同一时间附近的多个事项都可选择和编辑。
+
+让“今天还有什么”“这周实际做了多久”等查询读取权威 Schedule/Reminder/执行记录，
+不是让模型凭精简对象标题猜答案。扩展只读 State，明确查询和写入混合请求的顺序/原子性。
+逐步接入 Registry 收集真实能力缺口，先人工复盘，不自动修改运行代码。
+
+验收：从收集事项到安排、执行、补记、回顾走完一天；重启后记录不丢；未观察到活动不自动标记未完成。
+重复实例状态互不污染，查询结果能追溯来源。查询读路径不能产生 Operation 写入。
+
+## P2 · 真正的提醒与可靠后台
+
+实现到时判定、系统通知、投递状态和幂等键、失败重试，以及完成/忽略/稍后提醒。
+定义休眠、断线和重启后的补发规则，保存状态迁移，避免多实例重复通知。
+先完成确定时间/窗口截止提醒；Monitor 择机投递留到 P4。
+
+把后台服务生命周期从窗口剥离：启动/停止/状态查询、唯一实例、设备归属、采集健康、日志轮转、
+缓冲/重放、权限降级和升级兼容。降低无变化时的渲染和轮询，清理重复监听，支持减少动画。
+评测前台/后台、无采集/有采集的资源基线，再确定并记录资源预算。
+
+验收：关窗口、睡眠唤醒、服务崩溃恢复仍按既定策略投递；无重复 collector 和通知；用户能明确暂停采集及后台运行。
+
+## P3 · 让状态和记忆真正参与理解
+
+把已接受的 Profile/Memory 接入 canonical Flow 的只读上下文，逐项记录使用来源；
+处理冲突、遗忘、撤回和隐私开关。导入成功不再等同于“助手已经记住并会使用”。
+
+结合 P1 实际记录、用户状态自评及活动证据，提供任务归属候选和纠正入口。
+为任务身份和状态估计保留置信度/新鲜度，用户明确反馈优先于推断。
+收敛后端 Forecast 与共享时钟：前端仅显示权威预测和区间，不再自行构造另一份计划事实。
+先做个人基线与误差统计，再讨论状态驱动的排程权重。
+
+验收：接受/遗忘偏好能在后续输入中验证；每个建议能说明使用了什么；无观测时显示未知/演示而非真实判断。
+预测与真实耗时可对照，允许关闭个性化；不声称能诊断疲劳或准确测量人的生产力。
+
+## P4 · 主动但可控的协助
+
+将现有 missed/fixed conflict/overload 信号从“记录”升级到可审阅建议，补充偏离/超时场景。
+复用 Planner、Plan、Gate、Operations、Runtime，不新建独立的调整执行真相。
+建议必须给出原因、前后差异、影响范围、失效条件；用户忽略后冷却，重复证据不反复打扰。
+过期 Plan 重新校验/编译后仍须重新评估授权，不擅自执行旧批准。
+
+只有低风险、用户授权范围内的动作才允许自动执行，具备频率限制、Undo 和反馈记录。
+择机提醒只在用户给定窗口内使用可中断状态；到截止点仍需有明确兜底，不无限等“好时机”。
+
+验收：固定任务冲突、任务延误、状态低迷三类真实场景能建议、拒绝、接受、撤销；
+不确定的活动身份不触发自动重排，权限升级必须用户批准。
+
+## P5 · 向长期个人助手扩展
+
+- 长期目标、项目步骤、截止时间、周容量和习惯复盘；先让用户确认拆解，再形成可执行 Event。
+- 外部日历先只读忙闲，再按账户/日历授权写入；处理时区、重复例外、外部修改和去重。
+  提供导出、备份恢复、迁移和删除能力，多设备同步在确有需求时再做。
+- 日/周回顾连接计划、实际和主观反馈，用户决定长期偏好，不从单次行为固化“人格”。
+- MCP/Octopus 等连接层是可选入口，不另建规划/执行主链；外部内容不能变成授权指令。
+- 视觉活动理解是可选增强，见[专项设计](visual-activity-understanding.md)：
+  本地过滤、明确同意、采样预算和短留存先于模型调用，不作为核心提醒功能的前置条件。
+- Registry 驱动能力复盘；任何 Updater 仅形成可审查、可测试的开发建议，不能无人审核自改生产代码。
+
+验收：连续多周完成“目标 → 周/日安排 → 提醒 → 实际记录 → 复盘 → 调整”，
+用户可解释、纠正、导出和撤回所有个人上下文与自动化权限。
+
+## 在相关阶段开始前需要讨论的产品选择
+
+这些不阻塞 P0；不要为讨论远期功能推迟修复已确定的缺陷。
+
+| 阶段 | 需要确认的选择 | 建议起点（尚未实现） |
+| --- | --- | --- |
+| P1 | 无时间事项入口、完成标准、重复编辑默认范围 | 收集箱不自动排程；完成由用户确认；编辑明确询问范围 |
+| P1 | Task ↔ Reminder 转换如何保留历史 | 显式转换，保留关联与日志，避免静默丢时长 |
+| P2 | 通知渠道、错过提醒补发、免打扰 | 先 macOS；显示错过状态，补发/过期规则由用户设定 |
+| P3 | 哪些记忆和活动证据可供外部模型使用 | 最小化上下文，显示来源，敏感项默认不外发 |
+| P4 | 自动调整可改哪些任务、最多移动多少 | 默认先建议，按范围逐项授权，不自动改固定承诺 |
+| P5 | 首个外部日历/目标场景和多设备必要性 | 先一个用户的周计划，外部集成只读起步 |
+
+## 文档与命名维护
+
+当前能力以日期化调查为准，下一步以本路线图为准，职责边界以 [architecture.md](architecture.md) 为准。
+历史 Phase 记录仅作迁移证据；专项文档未通过验收的条款均是设计而非实现承诺。
+后续每轮功能交付应更新完成状态、证据、已知限制及验收结果。
+
+本轮没有添加、替换或删除代码类型/模块名。继续使用 `Item`、`Event`、`Plan`、`Operation`、
+`Runtime`；移除当前文档把 `Adaptation` 当作现有独立目录及旧语义路径仍为主链的表述。
+历史名称只留在归档；剩余兼容依赖按实际引用删除，不以文档声明迁移完成。
